@@ -299,7 +299,7 @@ export function VideoGeneration() {
   const history = historyQuery.data?.data?.items ?? []
 
   return (
-    <Main className='space-y-6 py-6'>
+    <Main className='space-y-6 overflow-x-hidden overflow-y-auto px-3 py-6 pb-12 sm:px-4'>
       <div>
         <h1 className='flex items-center gap-2 text-2xl font-semibold'>
           <Film className='size-6' />
