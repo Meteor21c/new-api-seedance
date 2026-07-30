@@ -45,6 +45,14 @@ func TestChannelOwnerNameUsesAdaptorChannelName(t *testing.T) {
 	}
 }
 
+func TestSeedanceDashboardModels(t *testing.T) {
+	require.ElementsMatch(t, []string{
+		"cheap-seedance-2.0",
+		"cheap-seedance-2.0-fast",
+		"cheap-seedance-2.0-mini",
+	}, channelId2Models[constant.ChannelTypeFZYingheVideo])
+}
+
 func TestBuildOpenAIModelOverridesOwnedBy(t *testing.T) {
 	modelItem := buildOpenAIModel("gpt-5.4", map[string]string{"gpt-5.4": "openai"})
 	require.Equal(t, "gpt-5.4", modelItem.Id)

@@ -8,6 +8,15 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
+	videoPlaygroundRouter := router.Group("/pg/video")
+	videoPlaygroundRouter.Use(middleware.RouteTag("relay"))
+	videoPlaygroundRouter.Use(middleware.SystemPerformanceCheck())
+	videoPlaygroundRouter.Use(middleware.UserAuth(), middleware.Distribute())
+	{
+		videoPlaygroundRouter.POST("/generations", controller.PlaygroundVideo)
+		videoPlaygroundRouter.GET("/generations/:task_id", controller.RelayTaskFetch)
+	}
+
 	// Video proxy: accepts either session auth (dashboard) or token auth (API clients)
 	videoProxyRouter := router.Group("/v1")
 	videoProxyRouter.Use(middleware.RouteTag("relay"))
