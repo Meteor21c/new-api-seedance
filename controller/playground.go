@@ -94,3 +94,50 @@ func PlaygroundVideo(c *gin.Context) {
 
 	RelayTask(c)
 }
+
+func PlaygroundImage(c *gin.Context) {
+	useAccessToken := c.GetBool("use_access_token")
+	if useAccessToken {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"message": "暂不支持使用 access token",
+				"type":    "access_denied",
+				"code":    "access_denied",
+			},
+		})
+		return
+	}
+
+	userId := c.GetInt("id")
+	userCache, err := model.GetUserCache(userId)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{
+				"message": err.Error(),
+				"type":    "query_user_failed",
+				"code":    "query_user_failed",
+			},
+		})
+		return
+	}
+	userCache.WriteContext(c)
+
+	usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+	tempToken := &model.Token{
+		UserId: userId,
+		Name:   fmt.Sprintf("image-playground-%s", usingGroup),
+		Group:  usingGroup,
+	}
+	if err := middleware.SetupContextForToken(c, tempToken); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{
+				"message": err.Error(),
+				"type":    "setup_playground_token_failed",
+				"code":    "setup_playground_token_failed",
+			},
+		})
+		return
+	}
+
+	Relay(c, types.RelayFormatOpenAIImage)
+}

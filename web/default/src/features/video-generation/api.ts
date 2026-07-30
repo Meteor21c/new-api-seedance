@@ -31,7 +31,8 @@ export async function createVideo(
 ): Promise<VideoCreateResponse> {
   const response = await api.post<VideoCreateResponse>(
     '/pg/video/generations',
-    request
+    request,
+    { skipErrorHandler: true }
   )
   return response.data
 }

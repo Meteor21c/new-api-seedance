@@ -36,7 +36,21 @@ export function handleServerError(error: unknown) {
   }
 
   if (error instanceof AxiosError) {
-    errMsg = error.response?.data.title
+    const data = error.response?.data as
+      | {
+          title?: string
+          message?: string
+          error?: { message?: string } | string
+        }
+      | undefined
+    const nestedError =
+      typeof data?.error === 'string' ? data.error : data?.error?.message
+    errMsg =
+      nestedError ||
+      data?.message ||
+      data?.title ||
+      error.message ||
+      i18next.t('Something went wrong!')
   }
 
   toast.error(errMsg)

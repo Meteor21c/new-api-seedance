@@ -43,6 +43,35 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), `"create_video"`)
 	assert.Contains(t, recorder.Body.String(), `"get_video"`)
+	assert.Contains(t, recorder.Body.String(), `"create_image"`)
+}
+
+func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
+	originalHandler := mcpInternalHandler
+	t.Cleanup(func() {
+		mcpInternalHandler = originalHandler
+	})
+
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, http.MethodPost, request.Method)
+		assert.Equal(t, "/v1/images/generations", request.URL.Path)
+		assert.Equal(t, "Bearer sk-test", request.Header.Get("Authorization"))
+		requestBody, err := io.ReadAll(request.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(requestBody), `"model":"gpt-image-1"`)
+		assert.Contains(t, string(requestBody), `"response_format":"url"`)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"created":1,"data":[{"url":"https://example.com/image.png"}]}`))
+	})
+
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-1","prompt":"A sunrise"}}}`,
+	)
+	MCP(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"https://example.com/image.png"`)
+	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
 }
 
 func TestMCPCreateVideoCallsInternalAPI(t *testing.T) {

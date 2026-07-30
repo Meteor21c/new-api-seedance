@@ -123,6 +123,7 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 		"enabled":    true,
 		"playground": true,
 		"chat":       true,
+		"image":      true,
 		"video":      true,
 	}
 

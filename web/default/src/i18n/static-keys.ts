@@ -439,6 +439,8 @@ export const STATIC_I18N_KEYS = [
   'Playground',
   'AI model testing environment',
   'Chat session management',
+  'Image Generation',
+  'Generate images with configured image models',
   'Video Generation',
   'Create Seedance videos and track asynchronous tasks',
   'No content to copy',

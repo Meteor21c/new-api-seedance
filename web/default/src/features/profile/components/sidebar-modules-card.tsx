@@ -71,6 +71,11 @@ export function SidebarModulesCard() {
           description: t('Chat session management'),
         },
         {
+          key: 'image',
+          title: t('Image Generation'),
+          description: t('Generate images with configured image models'),
+        },
+        {
           key: 'video',
           title: t('Video Generation'),
           description: t('Create Seedance videos and track asynchronous tasks'),

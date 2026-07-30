@@ -79,6 +79,14 @@ type mcpGetVideoArgs struct {
 	TaskID string `json:"task_id"`
 }
 
+type mcpCreateImageArgs struct {
+	Model   string `json:"model"`
+	Prompt  string `json:"prompt"`
+	N       int    `json:"n,omitempty"`
+	Size    string `json:"size,omitempty"`
+	Quality string `json:"quality,omitempty"`
+}
+
 func SetMCPInternalHandler(handler http.Handler) {
 	mcpInternalHandler = handler
 }
@@ -112,13 +120,13 @@ func MCP(c *gin.Context) {
 				"name":    mcpServerName,
 				"version": common.Version,
 			},
-			"instructions": "Create asynchronous Seedance video tasks with create_video, then poll get_video until SUCCESS or FAILURE.",
+			"instructions": "Generate images synchronously with create_image. Create asynchronous Seedance video tasks with create_video, then poll get_video until SUCCESS or FAILURE.",
 		})
 	case "ping":
 		writeMCPResult(c, request.ID, map[string]any{})
 	case "tools/list":
 		writeMCPResult(c, request.ID, map[string]any{
-			"tools": videoMCPTools(),
+			"tools": mediaMCPTools(),
 		})
 	case "tools/call":
 		handleMCPToolCall(c, request)
@@ -141,6 +149,8 @@ func handleMCPToolCall(c *gin.Context, request mcpRequest) {
 
 	var result mcpToolResult
 	switch params.Name {
+	case "create_image":
+		result = callCreateImageTool(c, params.Arguments)
 	case "create_video":
 		result = callCreateVideoTool(c, params.Arguments)
 	case "get_video":
@@ -150,6 +160,41 @@ func handleMCPToolCall(c *gin.Context, request mcpRequest) {
 		return
 	}
 	writeMCPResult(c, request.ID, result)
+}
+
+func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult {
+	var args mcpCreateImageArgs
+	if err := decodeMCPArguments(arguments, &args); err != nil {
+		return newMCPToolError("invalid create_image arguments: " + err.Error())
+	}
+	args.Model = strings.TrimSpace(args.Model)
+	args.Prompt = strings.TrimSpace(args.Prompt)
+	if args.Model == "" {
+		return newMCPToolError("model is required")
+	}
+	if args.Prompt == "" {
+		return newMCPToolError("prompt is required")
+	}
+	if args.N == 0 {
+		args.N = 1
+	}
+	if args.N < 1 || args.N > 4 {
+		return newMCPToolError("n must be between 1 and 4")
+	}
+
+	payload := map[string]any{
+		"model":           args.Model,
+		"prompt":          args.Prompt,
+		"n":               args.N,
+		"response_format": "url",
+	}
+	if size := strings.TrimSpace(args.Size); size != "" && size != "auto" {
+		payload["size"] = size
+	}
+	if quality := strings.TrimSpace(args.Quality); quality != "" && quality != "auto" {
+		payload["quality"] = quality
+	}
+	return callInternalAPI(c, http.MethodPost, "/v1/images/generations", payload)
 }
 
 func callCreateVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult {
@@ -193,7 +238,7 @@ func callCreateVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult
 		"start_image_url":  strings.TrimSpace(args.StartImageURL),
 		"end_image_url":    strings.TrimSpace(args.EndImageURL),
 	}
-	return callVideoAPI(c, http.MethodPost, "/v1/video/generations", payload)
+	return callInternalAPI(c, http.MethodPost, "/v1/video/generations", payload)
 }
 
 func callGetVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult {
@@ -205,7 +250,7 @@ func callGetVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult {
 	if args.TaskID == "" {
 		return newMCPToolError("task_id is required")
 	}
-	return callVideoAPI(
+	return callInternalAPI(
 		c,
 		http.MethodGet,
 		"/v1/video/generations/"+url.PathEscape(args.TaskID),
@@ -213,16 +258,16 @@ func callGetVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult {
 	)
 }
 
-func callVideoAPI(c *gin.Context, method, requestPath string, payload map[string]any) mcpToolResult {
+func callInternalAPI(c *gin.Context, method, requestPath string, payload map[string]any) mcpToolResult {
 	if mcpInternalHandler == nil {
-		return newMCPToolError("internal video API is unavailable")
+		return newMCPToolError("internal API is unavailable")
 	}
 
 	var body io.Reader
 	if payload != nil {
 		requestBody, err := common.Marshal(payload)
 		if err != nil {
-			return newMCPToolError("failed to encode video request")
+			return newMCPToolError("failed to encode request")
 		}
 		body = bytes.NewReader(requestBody)
 	}
@@ -239,11 +284,11 @@ func callVideoAPI(c *gin.Context, method, requestPath string, payload map[string
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
-		return newMCPToolError("failed to read internal video API response")
+		return newMCPToolError("failed to read internal API response")
 	}
 	if response.StatusCode >= http.StatusBadRequest {
 		return newMCPToolError(fmt.Sprintf(
-			"video API returned HTTP %d: %s",
+			"internal API returned HTTP %d: %s",
 			response.StatusCode,
 			strings.TrimSpace(string(responseBody)),
 		))
@@ -251,11 +296,11 @@ func callVideoAPI(c *gin.Context, method, requestPath string, payload map[string
 
 	var structured map[string]any
 	if err := common.Unmarshal(responseBody, &structured); err != nil {
-		return newMCPToolError("video API returned an invalid response")
+		return newMCPToolError("internal API returned an invalid response")
 	}
 	textBody, err := common.Marshal(structured)
 	if err != nil {
-		return newMCPToolError("failed to encode video tool result")
+		return newMCPToolError("failed to encode tool result")
 	}
 	return mcpToolResult{
 		Content: []mcpContent{
@@ -303,7 +348,7 @@ func writeMCPError(c *gin.Context, id any, code int, message string) {
 	})
 }
 
-func videoMCPTools() []mcpTool {
+func mediaMCPTools() []mcpTool {
 	stringSchema := func(description string) map[string]any {
 		return map[string]any{
 			"type":        "string",
@@ -311,6 +356,27 @@ func videoMCPTools() []mcpTool {
 		}
 	}
 	return []mcpTool{
+		{
+			Name:        "create_image",
+			Description: "Generate images synchronously through a configured OpenAI-compatible image model.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"model":  stringSchema("Exact image model name configured in New API."),
+					"prompt": stringSchema("Description of the image to generate."),
+					"n": map[string]any{
+						"type":        "integer",
+						"description": "Number of images. Defaults to 1.",
+						"minimum":     1,
+						"maximum":     4,
+					},
+					"size":    stringSchema("Optional provider-supported size, for example 1024x1024."),
+					"quality": stringSchema("Optional provider-supported quality, for example standard, hd, low, medium, or high."),
+				},
+				"required":             []string{"model", "prompt"},
+				"additionalProperties": false,
+			},
+		},
 		{
 			Name:        "create_video",
 			Description: "Create an asynchronous Seedance video generation task. The result returns a task_id; use get_video to poll it.",
