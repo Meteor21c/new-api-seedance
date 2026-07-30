@@ -111,18 +111,18 @@ const PRICE_PER_SECOND: Record<
   Partial<Record<VideoResolution, number>>
 > = {
   'cheap-seedance-2.0': {
-    '480p': 0.375,
-    '720p': 0.75,
-    '1080p': 1.875,
-    '4K': 3.75,
+    '480p': 0.36,
+    '720p': 0.72,
+    '1080p': 1.8,
+    '4K': 3.6,
   },
   'cheap-seedance-2.0-fast': {
-    '480p': 0.3,
-    '720p': 0.6,
+    '480p': 0.288,
+    '720p': 0.576,
   },
   'cheap-seedance-2.0-mini': {
-    '480p': 0.1875,
-    '720p': 0.375,
+    '480p': 0.18,
+    '720p': 0.36,
   },
 }
 
