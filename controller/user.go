@@ -525,6 +525,7 @@ func generateDefaultSidebarConfig(userRole int) string {
 		"enabled":    true,
 		"playground": true,
 		"chat":       true,
+		"video":      true,
 	}
 
 	// 控制台区域 - 所有用户都可以访问

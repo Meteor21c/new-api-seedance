@@ -96,6 +96,10 @@ export function SidebarModulesSection({
         title: t('Chat'),
         description: t('Access previous conversations and start new ones.'),
       },
+      video: {
+        title: t('Video Generation'),
+        description: t('Create Seedance videos and track asynchronous tasks'),
+      },
     },
     console: {
       detail: {

@@ -70,6 +70,11 @@ export function SidebarModulesCard() {
           title: t('Chat'),
           description: t('Chat session management'),
         },
+        {
+          key: 'video',
+          title: t('Video Generation'),
+          description: t('Create Seedance videos and track asynchronous tasks'),
+        },
       ],
     },
     {
