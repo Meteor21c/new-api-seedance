@@ -447,6 +447,8 @@ export const STATIC_I18N_KEYS = [
   'No available video models are configured in Channels',
   'Video Generation',
   'Create Seedance videos and track asynchronous tasks',
+  'Copy MCP prompt',
+  'MCP prompt copied',
   'No content to copy',
   'Please wait for the current generation to complete',
   'An unknown error occurred',

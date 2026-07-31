@@ -30,6 +30,8 @@
     "Video Generation": "Video Generation",
     "Create Seedance videos and track asynchronous tasks": "Create Seedance videos and track asynchronous tasks",
     "Generation settings": "Generation settings",
+    "Copy MCP prompt": "Copy MCP prompt",
+    "MCP prompt copied": "MCP prompt copied",
     "Reference assets must use public HTTP or HTTPS URLs": "Reference assets must use public HTTP or HTTPS URLs",
     "Prompt is required": "Prompt is required",
     "Prompt must not exceed 1300 characters": "Prompt must not exceed 1300 characters",

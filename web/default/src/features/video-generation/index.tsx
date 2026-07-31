@@ -20,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Copy,
   Clock3,
   ExternalLink,
   Film,
@@ -39,6 +40,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -58,6 +60,7 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 
 import {
   createVideo,
@@ -149,6 +152,94 @@ function splitReferenceUrls(raw: string): string[] {
     .filter(Boolean)
 }
 
+function mcpEndpoint(): string {
+  if (typeof window !== 'undefined' && window.location.origin) {
+    return `${window.location.origin}/mcp`
+  }
+  return 'https://api.meteor21c.fun/mcp'
+}
+
+function buildMcpPrompt(
+  values: VideoFormValues,
+  referenceFiles: File[],
+  startFrameFile: File | null,
+  endFrameFile: File | null
+): string {
+  const endpoint = mcpEndpoint()
+  const request = {
+    model: values.model.trim(),
+    prompt: values.prompt.trim(),
+    duration: values.duration,
+    resolution: values.resolution,
+    aspect_ratio: values.aspectRatio,
+    mode: values.mode,
+    audio: values.audio,
+    reference_images: splitReferenceUrls(values.referenceUrls),
+    reference_material_ids: [],
+    start_image_url: values.startImageUrl.trim(),
+    end_image_url: values.endImageUrl.trim(),
+    start_material_id: '',
+    end_material_id: '',
+  }
+  const localMaterials = [
+    ...referenceFiles.map(
+      (file) =>
+        `reference: ${file.name} (${file.type || 'unknown MIME type'}, ${file.size} bytes)`
+    ),
+    ...(startFrameFile
+      ? [
+          `start frame: ${startFrameFile.name} (${startFrameFile.type || 'unknown MIME type'}, ${startFrameFile.size} bytes)`,
+        ]
+      : []),
+    ...(endFrameFile
+      ? [
+          `end frame: ${endFrameFile.name} (${endFrameFile.type || 'unknown MIME type'}, ${endFrameFile.size} bytes)`,
+        ]
+      : []),
+  ]
+
+  return [
+    '请把下面内容作为一次 New API 视频 MCP 配置与生成任务执行。',
+    '先完成 MCP 连接并确认工具可用；不要把令牌写入代码、日志或回复。',
+    '',
+    '【MCP 连接】',
+    `服务地址：${endpoint}`,
+    '令牌：请将 YOUR_NEW_API_TOKEN 替换成我提供的 New API 用户令牌（不要使用上游 API Key）。',
+    '',
+    '只执行当前客户端对应的代码块：Codex 执行 Codex 块，Claude Code 执行 Claude 块。',
+    'Codex（终端执行，已有同名配置时先删除再添加）：',
+    '```bash',
+    "export METEOR_VIDEO_TOKEN='YOUR_NEW_API_TOKEN'",
+    `codex mcp remove meteor-video >/dev/null 2>&1 || true`,
+    `codex mcp add meteor-video --url '${endpoint}' --bearer-token-env-var METEOR_VIDEO_TOKEN`,
+    'codex mcp list',
+    '```',
+    '',
+    'Claude Code（终端执行）：',
+    '```bash',
+    "export METEOR_VIDEO_TOKEN='YOUR_NEW_API_TOKEN'",
+    `claude mcp add --transport http meteor-video '${endpoint}' --header "Authorization: Bearer \${METEOR_VIDEO_TOKEN}"`,
+    'claude mcp list',
+    '```',
+    '',
+    '重启或刷新 Codex/Claude，确认出现 create_video、get_video、create_material_upload；图片任务还可使用 create_image。',
+    '连接成功后，若本次提示词不为空就调用 create_video；若提示词为空，先向我索要提示词，不要猜测或直接提交。',
+    'create_video 返回 task_id 后，每隔数秒调用 get_video，直到 SUCCESS 或 FAILURE；成功时返回 result_url。',
+    '',
+    '【本次视频参数】',
+    '严格按以下 JSON 传给 create_video；空字符串和空数组表示当前未填写，不要自行补全。',
+    '```json',
+    JSON.stringify(request, null, 2),
+    '```',
+    '',
+    '【本地素材】',
+    localMaterials.length > 0
+      ? localMaterials.join('\n')
+      : '（空；没有选择本地素材）',
+    '复制的文字不包含本地文件字节。若要使用上面的本地文件，请在 Codex/Claude 中重新附加文件，然后先调用 create_material_upload，按返回的 upload_url、method 和全部 headers 用 HTTP PUT 上传原始字节，再把返回的 material_id 放入对应的 material_id 参数；不要把本地路径传给 create_video。',
+  ].join('\n')
+}
+
 function VideoResult({ task }: { task: VideoTask }) {
   const { t } = useTranslation()
 
@@ -210,6 +301,9 @@ export function VideoGeneration() {
   const [startFrameFile, setStartFrameFile] = useState<File | null>(null)
   const [endFrameFile, setEndFrameFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const { copyToClipboard } = useCopyToClipboard({
+    successMessage: t('MCP prompt copied'),
+  })
 
   const form = useForm<VideoFormValues>({
     resolver: zodResolver(videoFormSchema),
@@ -354,6 +448,17 @@ export function VideoGeneration() {
     }
   }
 
+  const copyMcpPrompt = () => {
+    void copyToClipboard(
+      buildMcpPrompt(
+        form.getValues(),
+        referenceFiles,
+        startFrameFile,
+        endFrameFile
+      )
+    )
+  }
+
   const currentTask = currentTaskQuery.data?.data
   const history = historyQuery.data?.data?.items ?? []
 
@@ -373,6 +478,17 @@ export function VideoGeneration() {
         <Card>
           <CardHeader>
             <CardTitle>{t('Generation settings')}</CardTitle>
+            <CardAction>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={copyMcpPrompt}
+              >
+                <Copy />
+                {t('Copy MCP prompt')}
+              </Button>
+            </CardAction>
             <CardDescription>
               {t(
                 'Upload local images directly to temporary OSS storage, or use public HTTP/HTTPS URLs'
@@ -386,107 +502,114 @@ export function VideoGeneration() {
                 onSubmit={form.handleSubmit(onSubmit)}
               >
                 <div className='grid gap-4 md:grid-cols-2'>
-                  <FormField
-                    control={form.control}
-                    name='model'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Model')}</FormLabel>
-                        <FormControl>
-                          <NativeSelect
-                            className='w-full'
-                            disabled={
-                              modelsQuery.isLoading ||
-                              (modelsQuery.data?.length ?? 0) === 0
-                            }
-                            value={field.value}
-                            onChange={field.onChange}
-                          >
-                            {(modelsQuery.data ?? []).map((item) => (
-                              <NativeSelectOption key={item.id} value={item.id}>
-                                {item.id}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
-                        </FormControl>
-                        <FormDescription>{modelDescription}</FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <div className='space-y-4'>
+                    <FormField
+                      control={form.control}
+                      name='model'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Model')}</FormLabel>
+                          <FormControl>
+                            <NativeSelect
+                              className='w-full'
+                              disabled={
+                                modelsQuery.isLoading ||
+                                (modelsQuery.data?.length ?? 0) === 0
+                              }
+                              value={field.value}
+                              onChange={field.onChange}
+                            >
+                              {(modelsQuery.data ?? []).map((item) => (
+                                <NativeSelectOption
+                                  key={item.id}
+                                  value={item.id}
+                                >
+                                  {item.id}
+                                </NativeSelectOption>
+                              ))}
+                            </NativeSelect>
+                          </FormControl>
+                          <FormDescription>{modelDescription}</FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
 
-                  <FormField
-                    control={form.control}
-                    name='resolution'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Resolution')}</FormLabel>
-                        <FormControl>
-                          <NativeSelect
-                            className='w-full'
-                            value={field.value}
-                            onChange={field.onChange}
-                          >
-                            {allowedResolutions.map((item) => (
-                              <NativeSelectOption key={item} value={item}>
-                                {item}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                    <FormField
+                      control={form.control}
+                      name='duration'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Duration (seconds)')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={4}
+                              max={15}
+                              value={field.value}
+                              onChange={(event) =>
+                                field.onChange(event.target.valueAsNumber)
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t('Allowed range: 4–15')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
 
-                  <FormField
-                    control={form.control}
-                    name='duration'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Duration (seconds)')}</FormLabel>
-                        <FormControl>
-                          <Input
-                            type='number'
-                            min={4}
-                            max={15}
-                            value={field.value}
-                            onChange={(event) =>
-                              field.onChange(event.target.valueAsNumber)
-                            }
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t('Allowed range: 4–15')}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <div className='space-y-4'>
+                    <FormField
+                      control={form.control}
+                      name='resolution'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Resolution')}</FormLabel>
+                          <FormControl>
+                            <NativeSelect
+                              className='w-full'
+                              value={field.value}
+                              onChange={field.onChange}
+                            >
+                              {allowedResolutions.map((item) => (
+                                <NativeSelectOption key={item} value={item}>
+                                  {item}
+                                </NativeSelectOption>
+                              ))}
+                            </NativeSelect>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
 
-                  <FormField
-                    control={form.control}
-                    name='aspectRatio'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Aspect ratio')}</FormLabel>
-                        <FormControl>
-                          <NativeSelect
-                            className='w-full'
-                            value={field.value}
-                            onChange={field.onChange}
-                          >
-                            {VIDEO_ASPECT_RATIOS.map((item) => (
-                              <NativeSelectOption key={item} value={item}>
-                                {item}
-                              </NativeSelectOption>
-                            ))}
-                          </NativeSelect>
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                    <FormField
+                      control={form.control}
+                      name='aspectRatio'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Aspect ratio')}</FormLabel>
+                          <FormControl>
+                            <NativeSelect
+                              className='w-full'
+                              value={field.value}
+                              onChange={field.onChange}
+                            >
+                              {VIDEO_ASPECT_RATIOS.map((item) => (
+                                <NativeSelectOption key={item} value={item}>
+                                  {item}
+                                </NativeSelectOption>
+                              ))}
+                            </NativeSelect>
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
                 </div>
 
                 <FormField

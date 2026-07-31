@@ -129,7 +129,7 @@ func MCP(c *gin.Context) {
 				"name":    mcpServerName,
 				"version": common.Version,
 			},
-			"instructions": "Generate images synchronously with create_image. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass material_id to create_video. Poll get_video until SUCCESS or FAILURE.",
+			"instructions": "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation and create_video for asynchronous Seedance video generation. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE.",
 		})
 	case "ping":
 		writeMCPResult(c, request.ID, map[string]any{})
@@ -440,12 +440,7 @@ func mediaMCPTools() []mcpTool {
 				"properties": map[string]any{
 					"model": map[string]any{
 						"type":        "string",
-						"description": "Seedance model. Defaults to cheap-seedance-2.0-fast.",
-						"enum": []string{
-							"cheap-seedance-2.0",
-							"cheap-seedance-2.0-fast",
-							"cheap-seedance-2.0-mini",
-						},
+						"description": "Exact video model ID configured in the user's New API channels. Use the model ID exposed by the video page; do not invent or replace aliases. Defaults to cheap-seedance-2.0-fast only for backward compatibility when omitted.",
 					},
 					"prompt": stringSchema("Video prompt, up to 1300 characters."),
 					"duration": map[string]any{

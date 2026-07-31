@@ -28,21 +28,27 @@
 
 实际扣费还会乘以用户分组倍率。若要保持表中金额，请确保充值换算、充值分组倍率和调用分组倍率都为 `1`。
 
+网页和 MCP 使用渠道中配置的对外模型名；如果渠道设置了模型映射，调用时应传映射前的渠道模型名，不要把文档中的 `cheap-*` 示例名硬编码到客户端。
+
 ## 网页使用
 
-登录后打开 `/video`。首版只接受公网 HTTP/HTTPS 素材地址，不上传或保存本地文件。
+登录后打开 `/video`。页面支持公网 HTTP/HTTPS 素材地址，也支持选择 JPG、PNG、WEBP 本地图片。文件由浏览器直传临时 OSS，New API 不代理文件字节；未配置临时 OSS 时仍可只填写公网 URL。
 
 任务成功后，页面直接使用上游签名视频地址播放。该地址默认 24 小时过期，应及时保存。
 
 ## Codex
 
-把用户自己的 New API 令牌写入本地环境变量：
+把用户自己的 New API 令牌写入本地环境变量，并用 Codex CLI 注册远程 MCP：
 
 ```bash
 export METEOR_VIDEO_TOKEN='sk-用户自己的令牌'
+codex mcp add meteor-video \
+  --url https://api.meteor21c.fun/mcp \
+  --bearer-token-env-var METEOR_VIDEO_TOKEN
+codex mcp list
 ```
 
-在 `~/.codex/config.toml` 中加入：
+也可以手动在 `~/.codex/config.toml` 中加入：
 
 ```toml
 [mcp_servers.meteor_video]
@@ -51,14 +57,15 @@ bearer_token_env_var = "METEOR_VIDEO_TOKEN"
 tool_timeout_sec = 60
 ```
 
-重启 Codex 后会出现 `create_video` 和 `get_video` 两个工具。
+重启 Codex 后会出现 `create_video`、`get_video`、`create_material_upload` 和 `create_image` 工具。
 
 ## Claude Code
 
 ```bash
+export METEOR_VIDEO_TOKEN='sk-用户自己的令牌'
 claude mcp add --transport http meteor-video \
   https://api.meteor21c.fun/mcp \
-  --header "Authorization: Bearer sk-用户自己的令牌"
+  --header "Authorization: Bearer ${METEOR_VIDEO_TOKEN}"
 ```
 
 也可以在 `.mcp.json` 中通过环境变量配置：

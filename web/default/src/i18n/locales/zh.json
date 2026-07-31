@@ -30,6 +30,8 @@
     "Video Generation": "视频生成",
     "Create Seedance videos and track asynchronous tasks": "创建 Seedance 视频并跟踪异步任务",
     "Generation settings": "生成设置",
+    "Copy MCP prompt": "复制 MCP 提示词",
+    "MCP prompt copied": "MCP 提示词已复制",
     "Reference assets must use public HTTP or HTTPS URLs": "参考素材必须使用公网可访问的 HTTP 或 HTTPS 地址",
     "Upload local images directly to temporary OSS storage, or use public HTTP/HTTPS URLs": "本地图片将直传临时 OSS 存储，也可以使用公网 HTTP/HTTPS 地址",
     "Prompt is required": "提示词不能为空",
