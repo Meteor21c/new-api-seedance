@@ -50,7 +50,8 @@ func insertGenerationModelBinding(
 
 func requestGenerationModels(t *testing.T, kind string) generationModelsTestResponse {
 	t.Helper()
-	context, recorder := gin.CreateTestContext(httptest.NewRecorder())
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest(
 		http.MethodGet,
 		"/api/user/generation_models?type="+kind,
