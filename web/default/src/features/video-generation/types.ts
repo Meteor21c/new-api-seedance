@@ -31,6 +31,11 @@ export const VIDEO_ASPECT_RATIOS = [
 export const VIDEO_MODES = ['text_with_reference', 'start_end_frame'] as const
 
 export type VideoTier = 'standard' | 'fast' | 'mini'
+export type VideoModelKind =
+  | 'kling-v3'
+  | 'kling-v3-omni'
+  | 'seedance'
+  | 'unknown'
 export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number]
 export type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIOS)[number]
 export type VideoMode = (typeof VIDEO_MODES)[number]
@@ -54,6 +59,7 @@ export interface VideoGenerationRequest {
 export interface GenerationModel {
   id: string
   tier?: VideoTier
+  kind?: VideoModelKind
 }
 
 export interface GenerationModelsResponse {

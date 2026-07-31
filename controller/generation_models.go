@@ -16,6 +16,7 @@ import (
 type generationModel struct {
 	ID   string `json:"id"`
 	Tier string `json:"tier,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 func usableGroupNames(userGroup string) []string {
@@ -61,6 +62,18 @@ func videoModelTier(modelName string) string {
 		return "fast"
 	default:
 		return "standard"
+	}
+}
+
+func videoModelKind(modelName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	switch {
+	case normalized == "kling-v3":
+		return "kling-v3"
+	case normalized == "kling-v3-omni":
+		return "kling-v3-omni"
+	default:
+		return ""
 	}
 }
 
@@ -126,6 +139,7 @@ func GetUserGenerationModels(c *gin.Context) {
 		item := generationModel{ID: name}
 		if kind == "video" {
 			item.Tier = videoModelTier(upstreamName)
+			item.Kind = videoModelKind(upstreamName)
 			items = append(items, item)
 			seen[name] = struct{}{}
 			continue

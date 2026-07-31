@@ -78,7 +78,7 @@ export function SidebarModulesCard() {
         {
           key: 'video',
           title: t('Video Generation'),
-          description: t('Create Seedance videos and track asynchronous tasks'),
+          description: t('Create asynchronous videos and track task status'),
         },
       ],
     },

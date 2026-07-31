@@ -129,7 +129,7 @@ func MCP(c *gin.Context) {
 				"name":    mcpServerName,
 				"version": common.Version,
 			},
-			"instructions": "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation and create_video for asynchronous Seedance video generation. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE.",
+			"instructions": "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation and create_video for asynchronous video generation, including Seedance and Kling V3. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE.",
 		})
 	case "ping":
 		writeMCPResult(c, request.ID, map[string]any{})
@@ -246,34 +246,29 @@ func callCreateVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	if args.Duration == 0 {
 		args.Duration = 5
 	}
-	if args.Resolution == "" {
-		args.Resolution = "720p"
-	}
-	if args.AspectRatio == "" {
-		args.AspectRatio = "9:16"
-	}
-	if args.Mode == "" {
-		args.Mode = "text_with_reference"
-	}
-	audio := true
-	if args.Audio != nil {
-		audio = *args.Audio
-	}
 
 	payload := map[string]any{
 		"model":                  args.Model,
 		"prompt":                 args.Prompt,
 		"duration":               args.Duration,
-		"resolution":             args.Resolution,
-		"aspect_ratio":           args.AspectRatio,
-		"mode":                   args.Mode,
-		"audio":                  audio,
 		"reference_images":       args.ReferenceImages,
 		"reference_material_ids": args.ReferenceMaterialIDs,
 		"start_image_url":        strings.TrimSpace(args.StartImageURL),
 		"end_image_url":          strings.TrimSpace(args.EndImageURL),
 		"start_material_id":      strings.TrimSpace(args.StartMaterialID),
 		"end_material_id":        strings.TrimSpace(args.EndMaterialID),
+	}
+	if args.Resolution != "" {
+		payload["resolution"] = args.Resolution
+	}
+	if args.AspectRatio != "" {
+		payload["aspect_ratio"] = args.AspectRatio
+	}
+	if args.Mode != "" {
+		payload["mode"] = args.Mode
+	}
+	if args.Audio != nil {
+		payload["audio"] = *args.Audio
 	}
 	return callInternalAPI(c, http.MethodPost, "/v1/video/generations", payload)
 }
@@ -434,44 +429,44 @@ func mediaMCPTools() []mcpTool {
 		},
 		{
 			Name:        "create_video",
-			Description: "Create an asynchronous Seedance video generation task. The result returns a task_id; use get_video to poll it.",
+			Description: "Create an asynchronous video generation task using the exact model configured in the user's New API channels. The result returns a task_id; use get_video to poll it.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"model": map[string]any{
 						"type":        "string",
-						"description": "Exact video model ID configured in the user's New API channels. Use the model ID exposed by the video page; do not invent or replace aliases. Defaults to cheap-seedance-2.0-fast only for backward compatibility when omitted.",
+						"description": "Exact video model ID configured in the user's New API channels, including Seedance or Kling V3 models. Use the model ID exposed by the video page; do not invent or replace aliases. Defaults to cheap-seedance-2.0-fast only for backward compatibility when omitted.",
 					},
 					"prompt": stringSchema("Video prompt, up to 1300 characters."),
 					"duration": map[string]any{
 						"type":        "integer",
 						"description": "Output duration in seconds. Defaults to 5.",
-						"minimum":     4,
+						"minimum":     3,
 						"maximum":     15,
 					},
 					"resolution": map[string]any{
 						"type":        "string",
-						"description": "Output resolution. Fast and mini support only 480p and 720p.",
+						"description": "Output resolution. Seedance fast/mini support only 480p and 720p; Kling supports 720p, 1080p, and 4K. Omit to use the selected model's default.",
 						"enum":        []string{"480p", "720p", "1080p", "4K"},
 					},
 					"aspect_ratio": map[string]any{
 						"type":        "string",
-						"description": "Output aspect ratio. Defaults to 9:16.",
+						"description": "Output aspect ratio. Omit to use the selected model's default (Seedance 9:16, Kling 16:9).",
 						"enum":        []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"},
 					},
 					"mode": map[string]any{
 						"type":        "string",
-						"description": "Generation mode. start_end_frame requires both start and end frames, supplied by URL or material ID.",
-						"enum":        []string{"text_with_reference", "start_end_frame"},
+						"description": "Seedance uses text_with_reference or start_end_frame; Kling uses std, pro, or 4k. Omit to derive the mode from resolution. start_end_frame requires both start and end frames for Seedance.",
+						"enum":        []string{"text_with_reference", "start_end_frame", "std", "pro", "4k"},
 					},
 					"audio": map[string]any{
 						"type":        "boolean",
-						"description": "Generate audio. Defaults to true.",
+						"description": "Generate audio. Omit to use the provider adapter default (Seedance on, Kling off).",
 					},
 					"reference_images": map[string]any{
 						"type":        "array",
-						"description": "Public HTTP/HTTPS reference asset URLs. Prefixes reference:, start:, and end: are supported.",
-						"items":       stringSchema("Public reference asset URL."),
+						"description": "Public HTTP/HTTPS reference asset URLs. Prefixes reference:, start:, and end: are supported; MP4 URLs are treated as reference videos for kling-v3-omni.",
+						"items":       stringSchema("Public reference image or video URL."),
 					},
 					"reference_material_ids": map[string]any{
 						"type":        "array",
@@ -489,7 +484,7 @@ func mediaMCPTools() []mcpTool {
 		},
 		{
 			Name:        "get_video",
-			Description: "Get a Seedance video task by task_id. Poll until status is SUCCESS or FAILURE. On success, data.result_url is the signed video URL.",
+			Description: "Get a video task by task_id. Poll until status is SUCCESS or FAILURE. On success, data.result_url is the signed video URL.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

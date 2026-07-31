@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -59,6 +60,76 @@ func TestNormalizeRequestValidatesModelResolutionMatrix(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not supported")
+}
+
+func TestNormalizeKlingV3UsesKlingRangeAndDefaults(t *testing.T) {
+	audio := false
+	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
+		Model:    "kling-v3",
+		Prompt:   "A cinematic sunrise",
+		Duration: 3,
+	}, inputOptions{Resolution: "1080P", Audio: &audio})
+
+	require.NoError(t, err)
+	assert.Equal(t, "1080p", payload.Resolution)
+	assert.Equal(t, "16:9", payload.AspectRatio)
+	assert.False(t, payload.Audio)
+	assert.Equal(t, "pro", payload.Mode)
+}
+
+func TestNormalizeKlingDefaultsToSilent(t *testing.T) {
+	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
+		Model:    "kling-v3-omni",
+		Prompt:   "A cinematic sunrise",
+		Duration: 5,
+	}, inputOptions{})
+
+	require.NoError(t, err)
+	assert.False(t, payload.Audio)
+	assert.Equal(t, "1080p", payload.Resolution)
+}
+
+func TestBuildKlingV3RequestUsesOfficialFieldNames(t *testing.T) {
+	body, err := buildKlingRequest(requestPayload{
+		Model:           "kling-v3",
+		Input:           "A girl smiles",
+		Resolution:      "720p",
+		DurationSeconds: 5,
+		Audio:           true,
+		StartImageURL:   "https://cdn.example.com/start.png",
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model_name":"kling-v3","prompt":"A girl smiles","image":"https://cdn.example.com/start.png","duration":5,"mode":"std","sound":"on"}`, string(encoded))
+}
+
+func TestBuildKlingV3OmniMapsReferenceVideoAndTurnsIntoOfficialLists(t *testing.T) {
+	body, err := buildKlingRequest(requestPayload{
+		Model:           "kling-v3-omni",
+		Input:           "A cinematic shot",
+		Resolution:      "1080p",
+		AspectRatio:     "16:9",
+		DurationSeconds: 5,
+		Audio:           false,
+		ReferenceImages: []string{"reference:https://cdn.example.com/style.png", "reference:https://cdn.example.com/motion.mp4"},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model_name":"kling-v3-omni","prompt":"A cinematic shot","image_list":[{"image_url":"https://cdn.example.com/style.png","type":"reference"}],"video_list":[{"video_url":"https://cdn.example.com/motion.mp4","refer_type":"feature","keep_original_sound":"yes"}],"duration":5,"mode":"pro","aspect_ratio":"16:9","sound":"off"}`, string(encoded))
+}
+
+func TestKlingV3OmniAllowsPricedAudioWithReferenceVideo(t *testing.T) {
+	audio := true
+	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
+		Model:    "kling-v3-omni",
+		Prompt:   "A cinematic shot",
+		Duration: 5,
+		Images:   []string{"reference:https://cdn.example.com/motion.mp4"},
+	}, inputOptions{Audio: &audio})
+	require.NoError(t, err)
+	assert.True(t, payload.Audio)
 }
 
 func TestMappedRequestModelResolvesChannelAliases(t *testing.T) {
@@ -154,6 +225,22 @@ func TestEstimateBillingUsesDurationAndResolution(t *testing.T) {
 	assert.Equal(t, 2.5, ratios["resolution"])
 }
 
+func TestEstimateBillingUsesKlingAudioAndReferenceVideoRatios(t *testing.T) {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(requestContextKey, requestPayload{
+		Model:           "kling-v3-omni",
+		Resolution:      "720p",
+		DurationSeconds: 5,
+		Audio:           false,
+		ReferenceImages: []string{"reference:https://cdn.example.com/motion.mp4"},
+	})
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(context, &relaycommon.RelayInfo{})
+	assert.Equal(t, 5.0, ratios["duration"])
+	assert.Equal(t, 1.5, ratios["reference_video"])
+	assert.Equal(t, 1.0, ratios["audio"])
+}
+
 func TestDefaultRetailPricesIncludeTwentyPercentMarkup(t *testing.T) {
 	basePrices := ratio_setting.GetDefaultModelPriceMap()
 	expectedPerSecond := map[string]map[string]float64{
@@ -170,6 +257,16 @@ func TestDefaultRetailPricesIncludeTwentyPercentMarkup(t *testing.T) {
 		"cheap-seedance-2.0-mini": {
 			"480p": 0.18,
 			"720p": 0.36,
+		},
+		"kling-v3": {
+			"720p":  0.468,
+			"1080p": 0.624,
+			"4K":    2.34,
+		},
+		"kling-v3-omni": {
+			"720p":  0.468,
+			"1080p": 0.624,
+			"4K":    2.34,
 		},
 	}
 
@@ -214,6 +311,35 @@ func TestDoResponseReadsStandardEnvelope(t *testing.T) {
 	assert.Equal(t, "upstream-123", taskID)
 	assert.Contains(t, recorder.Body.String(), "task_public")
 	assert.NotContains(t, recorder.Body.String(), "upstream-123")
+}
+
+func TestDoResponseReadsKlingEnvelope(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"code":0,"message":"SUCCEED","data":{"task_id":"kling-123","task_status":"submitted"}}`,
+		)),
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "kling-v3",
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+
+	taskID, _, taskErr := (&TaskAdaptor{}).DoResponse(ginContext, response, info)
+
+	require.Nil(t, taskErr)
+	assert.Equal(t, "kling-123", taskID)
+}
+
+func TestParseKlingTaskResultMapsSuccessAndNestedVideoURL(t *testing.T) {
+	result, err := (&TaskAdaptor{}).ParseTaskResult([]byte(
+		`{"code":0,"data":{"task_id":"kling-123","task_status":"succeed","task_result":{"videos":[{"url":"https://cdn.example.com/kling.mp4"}]}}}`,
+	))
+	require.NoError(t, err)
+	assert.EqualValues(t, model.TaskStatusSuccess, result.Status)
+	assert.Equal(t, "https://cdn.example.com/kling.mp4", result.Url)
 }
 
 func TestParseTaskResultMapsTerminalStates(t *testing.T) {

@@ -73,31 +73,78 @@ import {
   VIDEO_ASPECT_RATIOS,
   VIDEO_MODES,
   type VideoGenerationRequest,
+  type VideoAspectRatio,
+  type VideoModelKind,
   type VideoResolution,
   type VideoTask,
   type VideoTier,
 } from './types'
 
-const videoFormSchema = z.object({
-  model: z.string().trim().min(1, 'Model is required'),
-  prompt: z
-    .string()
-    .trim()
-    .min(1, 'Prompt is required')
-    .max(1300, 'Prompt must not exceed 1300 characters'),
-  duration: z
-    .number()
-    .int()
-    .min(4, 'Duration must be at least 4 seconds')
-    .max(15, 'Duration must not exceed 15 seconds'),
-  resolution: z.enum(['480p', '720p', '1080p', '4K']),
-  aspectRatio: z.enum(VIDEO_ASPECT_RATIOS),
-  mode: z.enum(VIDEO_MODES),
-  audio: z.boolean(),
-  referenceUrls: z.string(),
-  startImageUrl: z.string(),
-  endImageUrl: z.string(),
-})
+function inferredModelKind(modelName: string): VideoModelKind {
+  const normalized = modelName.trim().toLowerCase()
+  if (normalized === 'kling-v3') return 'kling-v3'
+  if (normalized === 'kling-v3-omni') return 'kling-v3-omni'
+  if (normalized.includes('seedance')) return 'seedance'
+  return 'unknown'
+}
+
+function minimumDurationForKind(kind: VideoModelKind): number {
+  return kind === 'kling-v3' || kind === 'kling-v3-omni' ? 3 : 4
+}
+
+const KLING_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const
+
+function aspectRatiosForKind(kind: VideoModelKind): VideoAspectRatio[] {
+  if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
+    return [...KLING_ASPECT_RATIOS]
+  }
+  return [...VIDEO_ASPECT_RATIOS]
+}
+
+const videoFormSchema = z
+  .object({
+    model: z.string().trim().min(1, 'Model is required'),
+    prompt: z
+      .string()
+      .trim()
+      .min(1, 'Prompt is required')
+      .max(1300, 'Prompt must not exceed 1300 characters'),
+    duration: z
+      .number()
+      .int()
+      .min(3, 'Duration must be at least 3 seconds')
+      .max(15, 'Duration must not exceed 15 seconds'),
+    resolution: z.enum(['480p', '720p', '1080p', '4K']),
+    aspectRatio: z.enum(VIDEO_ASPECT_RATIOS),
+    mode: z.enum(VIDEO_MODES),
+    audio: z.boolean(),
+    referenceUrls: z.string(),
+    startImageUrl: z.string(),
+    endImageUrl: z.string(),
+  })
+  .superRefine((values, context) => {
+    const kind = inferredModelKind(values.model)
+    const minimum = minimumDurationForKind(kind)
+    if (values.duration < minimum) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['duration'],
+        message: `Duration must be at least ${minimum} seconds`,
+      })
+    }
+    if (
+      (kind === 'kling-v3' || kind === 'kling-v3-omni') &&
+      !KLING_ASPECT_RATIOS.includes(
+        values.aspectRatio as (typeof KLING_ASPECT_RATIOS)[number]
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aspectRatio'],
+        message: 'Kling supports only 16:9, 9:16, or 1:1',
+      })
+    }
+  })
 
 type VideoFormValues = z.infer<typeof videoFormSchema>
 
@@ -121,12 +168,70 @@ const PRICE_PER_SECOND: Record<
   },
 }
 
+const KLING_V3_PRICES = {
+  silent: { '720p': 0.468, '1080p': 0.624, '4K': 2.34 },
+  audio: { '720p': 0.858, '1080p': 1.092, '4K': 2.34 },
+} satisfies Record<string, Record<'720p' | '1080p' | '4K', number>>
+
+const KLING_V3_OMNI_PRICES = {
+  noReferenceVideo: {
+    silent: { '720p': 0.468, '1080p': 0.624, '4K': 2.34 },
+    audio: { '720p': 0.624, '1080p': 0.78, '4K': 2.34 },
+  },
+  referenceVideo: {
+    silent: { '720p': 0.702, '1080p': 0.936, '4K': 2.34 },
+    audio: { '720p': 0.858, '1080p': 1.092, '4K': 2.34 },
+  },
+} satisfies Record<
+  string,
+  Record<string, Record<'720p' | '1080p' | '4K', number>>
+>
+
 const TERMINAL_STATUSES = new Set(['SUCCESS', 'FAILURE'])
 
-function resolutionsForTier(tier: VideoTier): VideoResolution[] {
+function resolutionsForModel(
+  kind: VideoModelKind,
+  tier: VideoTier
+): VideoResolution[] {
+  if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
+    return ['720p', '1080p', '4K']
+  }
   return tier === 'standard'
     ? ['480p', '720p', '1080p', '4K']
     : ['480p', '720p']
+}
+
+function hasReferenceVideo(raw: string): boolean {
+  return splitReferenceUrls(raw).some((value) => {
+    const url = value.replace(/^(reference|start|end):/i, '')
+    return /\.mp4(?:$|[?#])/i.test(url)
+  })
+}
+
+function estimateKlingPrice(
+  kind: VideoModelKind,
+  resolution: VideoResolution,
+  audio: boolean,
+  referenceUrls: string
+): number {
+  if (kind === 'kling-v3') {
+    return (
+      (audio ? KLING_V3_PRICES.audio : KLING_V3_PRICES.silent)[
+        resolution as keyof typeof KLING_V3_PRICES.silent
+      ] ?? 0
+    )
+  }
+  if (kind === 'kling-v3-omni') {
+    const table = hasReferenceVideo(referenceUrls)
+      ? KLING_V3_OMNI_PRICES.referenceVideo
+      : KLING_V3_OMNI_PRICES.noReferenceVideo
+    return (
+      (audio ? table.audio : table.silent)[
+        resolution as keyof typeof table.silent
+      ] ?? 0
+    )
+  }
+  return 0
 }
 
 function progressValue(progress: string): number {
@@ -325,14 +430,19 @@ export function VideoGeneration() {
   const resolution = form.watch('resolution')
   const duration = form.watch('duration')
   const mode = form.watch('mode')
+  const audio = form.watch('audio')
+  const referenceUrls = form.watch('referenceUrls')
   const modelsQuery = useQuery({
     queryKey: ['video-generation-models'],
     queryFn: getVideoModels,
     retry: false,
   })
   const selectedModel = modelsQuery.data?.find((item) => item.id === model)
+  const selectedKind = selectedModel?.kind ?? inferredModelKind(model)
   const selectedTier = selectedModel?.tier ?? 'standard'
-  const allowedResolutions = resolutionsForTier(selectedTier)
+  const allowedResolutions = resolutionsForModel(selectedKind, selectedTier)
+  const allowedAspectRatios = aspectRatiosForKind(selectedKind)
+  const minimumDuration = minimumDurationForKind(selectedKind)
   let modelDescription = t(
     'No available video models are configured in Channels'
   )
@@ -359,10 +469,19 @@ export function VideoGeneration() {
     }
   }, [allowedResolutions, form, resolution])
 
+  useEffect(() => {
+    if (!allowedAspectRatios.includes(form.getValues('aspectRatio'))) {
+      form.setValue('aspectRatio', allowedAspectRatios[0] ?? '16:9')
+    }
+  }, [allowedAspectRatios, form])
+
   const estimatedPrice = useMemo(() => {
-    const pricePerSecond = PRICE_PER_SECOND[selectedTier][resolution] ?? 0
+    const pricePerSecond =
+      selectedKind === 'kling-v3' || selectedKind === 'kling-v3-omni'
+        ? estimateKlingPrice(selectedKind, resolution, audio, referenceUrls)
+        : (PRICE_PER_SECOND[selectedTier][resolution] ?? 0)
     return pricePerSecond * (Number.isFinite(duration) ? duration : 0)
-  }, [duration, resolution, selectedTier])
+  }, [audio, duration, referenceUrls, resolution, selectedKind, selectedTier])
 
   const currentTaskQuery = useQuery({
     queryKey: ['video-task', currentTaskId],
@@ -391,8 +510,12 @@ export function VideoGeneration() {
   })
 
   const onSubmit = async (values: VideoFormValues) => {
+    const isKling =
+      selectedKind === 'kling-v3' || selectedKind === 'kling-v3-omni'
+    const requiresBothFrames = !isKling
     if (
       values.mode === 'start_end_frame' &&
+      requiresBothFrames &&
       !startFrameFile &&
       !values.startImageUrl.trim()
     ) {
@@ -401,13 +524,13 @@ export function VideoGeneration() {
     }
     if (
       values.mode === 'start_end_frame' &&
+      requiresBothFrames &&
       !endFrameFile &&
       !values.endImageUrl.trim()
     ) {
       toast.error(t('Select an end frame image or enter its URL'))
       return
     }
-
     setIsUploading(true)
     try {
       const referenceImages = splitReferenceUrls(values.referenceUrls)
@@ -470,7 +593,7 @@ export function VideoGeneration() {
           {t('Video Generation')}
         </h1>
         <p className='text-muted-foreground mt-1 text-sm'>
-          {t('Create Seedance videos and track asynchronous tasks')}
+          {t('Create asynchronous videos and track task status')}
         </p>
       </div>
 
@@ -544,7 +667,7 @@ export function VideoGeneration() {
                           <FormControl>
                             <Input
                               type='number'
-                              min={4}
+                              min={minimumDuration}
                               max={15}
                               value={field.value}
                               onChange={(event) =>
@@ -553,7 +676,11 @@ export function VideoGeneration() {
                             />
                           </FormControl>
                           <FormDescription>
-                            {t('Allowed range: 4–15')}
+                            {t(
+                              minimumDuration === 3
+                                ? 'Allowed range: 3–15'
+                                : 'Allowed range: 4–15'
+                            )}
                           </FormDescription>
                           <FormMessage />
                         </FormItem>
@@ -598,7 +725,7 @@ export function VideoGeneration() {
                               value={field.value}
                               onChange={field.onChange}
                             >
-                              {VIDEO_ASPECT_RATIOS.map((item) => (
+                              {allowedAspectRatios.map((item) => (
                                 <NativeSelectOption key={item} value={item}>
                                   {item}
                                 </NativeSelectOption>
@@ -676,7 +803,12 @@ export function VideoGeneration() {
                               {t('Generate audio')}
                             </FormLabel>
                             <FormDescription>
-                              {t('Audio does not change the listed price')}
+                              {t(
+                                selectedKind === 'kling-v3' ||
+                                  selectedKind === 'kling-v3-omni'
+                                  ? 'Audio changes the listed price'
+                                  : 'Audio does not change the listed price'
+                              )}
                             </FormDescription>
                           </div>
                           <FormControl>
@@ -703,7 +835,10 @@ export function VideoGeneration() {
                           multiple
                           onChange={(event) =>
                             setReferenceFiles(
-                              [...(event.target.files ?? [])].slice(0, 9)
+                              [...(event.target.files ?? [])].slice(
+                                0,
+                                selectedKind === 'kling-v3' ? 2 : 9
+                              )
                             )
                           }
                         />
@@ -731,7 +866,7 @@ export function VideoGeneration() {
                               className='min-h-24 font-mono text-xs'
                               placeholder={[
                                 'https://cdn.example.com/reference.jpg',
-                                'reference:https://cdn.example.com/audio.mp3',
+                                'reference:https://cdn.example.com/reference.mp4',
                               ].join('\n')}
                               {...field}
                             />
@@ -903,7 +1038,7 @@ export function VideoGeneration() {
         <CardHeader>
           <CardTitle>{t('Recent video tasks')}</CardTitle>
           <CardDescription>
-            {t('Your latest Seedance generation requests')}
+            {t('Your latest video generation requests')}
           </CardDescription>
         </CardHeader>
         <CardContent>
