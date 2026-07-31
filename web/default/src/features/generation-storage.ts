@@ -18,14 +18,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 /**
  * Client-only persistence for the image/video generation workspaces.
  *
- * We intentionally store task metadata and signed result URLs only. The
- * generated binary is still served by the upstream URL, so this does not add
- * server-side storage, CPU, or background work. Records are scoped to the
- * signed-in user and expire automatically to match the upstream URL lifetime.
+ * Task metadata and signed result URLs live in localStorage. Image generation
+ * additionally stores base64 results as browser-local IndexedDB Blobs. None of
+ * this adds application-server storage, CPU, or background work. Records are
+ * scoped to the signed-in user and expire automatically after 24 hours.
  */
 
 export const GENERATION_RESULT_TTL_MS = 24 * 60 * 60 * 1000
-export const GENERATION_PENDING_TTL_MS = 6 * 60 * 60 * 1000
+export const GENERATION_PENDING_TTL_MS = 20 * 60 * 1000
 export const GENERATION_HISTORY_LIMIT = 12
 
 type StoredGeneration<T> = {
@@ -35,7 +35,7 @@ type StoredGeneration<T> = {
 
 const STORAGE_PREFIX = 'newapi:generation:v1'
 
-function getUserScope(): string {
+export function getGenerationUserScope(): string {
   if (typeof window === 'undefined') return 'server'
 
   try {
@@ -55,7 +55,7 @@ function getUserScope(): string {
 }
 
 function storageKey(name: string): string {
-  return `${STORAGE_PREFIX}:${getUserScope()}:${name}`
+  return `${STORAGE_PREFIX}:${getGenerationUserScope()}:${name}`
 }
 
 export function readGenerationRecord<T>(

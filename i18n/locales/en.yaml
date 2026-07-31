@@ -277,3 +277,8 @@ custom_oauth.name_empty: "Provider name cannot be empty"
 custom_oauth.has_bindings: "Cannot delete provider with existing user bindings"
 custom_oauth.binding_not_found: "OAuth binding not found"
 custom_oauth.provider_id_field_invalid: "Could not extract user ID from provider response"
+
+# Generation concurrency messages
+generation.already_in_progress: "A generation request of this type is already in progress. Please wait for it to finish before submitting another request."
+generation.video_already_in_progress: "A video task is already processing for this user. Please wait for it to succeed or fail before submitting another video."
+generation.concurrency_check_failed: "Unable to verify the active generation request. Please try again later."

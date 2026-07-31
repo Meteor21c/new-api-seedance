@@ -128,9 +128,14 @@ func (t *Task) GetUpstreamTaskID() string {
 	return t.TaskID
 }
 
-// GetResultURL 获取任务结果 URL（视频地址等）
-// 新数据存在 PrivateData.ResultURL 中；旧数据回退到 FailReason（历史兼容）
+// GetResultURL 获取任务结果 URL（视频地址等）。
+// 新数据存在 PrivateData.ResultURL 中；只有成功的旧任务才允许回退到
+// FailReason，因为旧版本曾将成功 URL 存在该字段。失败任务的 FailReason
+// 是错误信息，绝不能作为可播放地址返回给客户端。
 func (t *Task) GetResultURL() string {
+	if t.Status != TaskStatusSuccess {
+		return ""
+	}
 	if t.PrivateData.ResultURL != "" {
 		return t.PrivateData.ResultURL
 	}
@@ -322,6 +327,28 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 		return nil
 	}
 	return tasks
+}
+
+// HasActiveVideoTaskForUser reports whether the user already has a video task
+// that has not reached a terminal state. Suno and Midjourney use the same task
+// table but are different generation categories, so they are excluded.
+// Very old unfinished rows are ignored as a final safeguard against a stale
+// upstream task blocking the user forever; the normal timeout worker marks
+// such rows as failed much earlier.
+func HasActiveVideoTaskForUser(userID int, cutoffUnix int64) (bool, error) {
+	if userID <= 0 {
+		return false, nil
+	}
+	var id int64
+	err := DB.Model(&Task{}).
+		Where("user_id = ?", userID).
+		Where("platform NOT IN ?", []string{string(constant.TaskPlatformSuno), string(constant.TaskPlatformMidjourney)}).
+		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+		Where("submit_time >= ?", cutoffUnix).
+		Order("id DESC").
+		Limit(1).
+		Pluck("id", &id).Error
+	return id != 0, err
 }
 
 // HasUnfinishedSyncTasks reports whether at least one async (Suno/video) task is

@@ -63,9 +63,14 @@ jobs:
             common/model.go \
             controller/generation_models.go \
             controller/generation_models_test.go \
+            i18n/keys.go \
+            middleware/generation_concurrency.go \
+            middleware/generation_concurrency_test.go \
             middleware/sidebar_module.go \
             middleware/sidebar_module_test.go \
             model/ability.go \
+            model/task.go \
+            model/task_generation_test.go \
             relay/channel/task/fzyinghe/adaptor.go \
             relay/channel/task/fzyinghe/adaptor_test.go \
             relay/relay_task.go \
@@ -74,7 +79,7 @@ jobs:
             router/relay-router.go \
             router/video-router.go)"
           go test ./relay/channel/task/fzyinghe
-          go test ./controller ./middleware ./relay ./router
+          go test ./controller ./middleware ./model ./relay ./router
 
   image:
     needs: verify

@@ -283,6 +283,34 @@ function statusVariant(status: string) {
   return 'secondary' as const
 }
 
+function errorMessage(error: unknown): string {
+  const responseData = (
+    error as {
+      response?: {
+        data?: {
+          message?: string
+          error?: { message?: string }
+        }
+      }
+    }
+  )?.response?.data
+  return (
+    responseData?.error?.message ||
+    responseData?.message ||
+    (error instanceof Error ? error.message : '')
+  )
+}
+
+function upstreamFailureHint(reason: string): string {
+  if (reason.includes('当前用户未分配该模型可用的厂商')) {
+    return 'The upstream API account has not been assigned a provider for this model. Enable the model in the upstream FZYinghe account or contact its support.'
+  }
+  if (reason.includes('未识别到 Generate 按钮实际积分')) {
+    return 'The upstream provider could not detect the model price on its Generate page. This is an upstream provider availability or pricing-adapter issue, not the local New API price.'
+  }
+  return ''
+}
+
 function taskTimestamp(task: VideoTask): string {
   const timestamp = task.submit_time || task.created_at
   return new Date(timestamp * 1000).toLocaleString()
@@ -415,6 +443,7 @@ function buildMcpPrompt(
 
 function VideoResult({ task }: { task: VideoTask }) {
   const { t } = useTranslation()
+  const failureHint = upstreamFailureHint(task.fail_reason || '')
 
   return (
     <div className='space-y-4'>
@@ -434,7 +463,7 @@ function VideoResult({ task }: { task: VideoTask }) {
         <Progress value={progressValue(task.progress)} />
       )}
 
-      {task.result_url && (
+      {task.status === 'SUCCESS' && task.result_url && (
         <>
           <video
             className='aspect-video w-full rounded-lg bg-black object-contain'
@@ -458,7 +487,12 @@ function VideoResult({ task }: { task: VideoTask }) {
         <Alert variant='destructive'>
           <AlertTitle>{t('Video generation failed')}</AlertTitle>
           <AlertDescription>
-            {task.fail_reason || t('Please try again later')}
+            <span className='block'>
+              {task.fail_reason || t('Please try again later')}
+            </span>
+            {failureHint && (
+              <span className='mt-2 block text-xs'>{t(failureHint)}</span>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -674,9 +708,29 @@ export function VideoGeneration() {
       toast.success(t('Video task submitted'))
       void queryClient.invalidateQueries({ queryKey: ['video-tasks'] })
     },
+    onError: (error) => {
+      const message = errorMessage(error)
+      const hint = upstreamFailureHint(message)
+      toast.error(
+        hint
+          ? `${message}\n${t(hint)}`
+          : message || t('Video task submission failed')
+      )
+    },
   })
 
   const onSubmit = async (values: VideoFormValues) => {
+    const taskAtSubmit = currentTaskQuery.data?.data ?? restoredTask
+    if (
+      createMutation.isPending ||
+      isUploading ||
+      (taskAtSubmit && !TERMINAL_STATUSES.has(taskAtSubmit.status))
+    ) {
+      toast.error(
+        t('Wait for the current video task to finish before submitting another')
+      )
+      return
+    }
     const isKling = isKlingKind(selectedKind)
     if (!allowedResolutions.includes(values.resolution)) {
       toast.error(
@@ -778,6 +832,9 @@ export function VideoGeneration() {
   }
 
   const currentTask = currentTaskQuery.data?.data ?? restoredTask
+  const hasActiveVideoTask = Boolean(
+    currentTask && !TERMINAL_STATUSES.has(currentTask.status)
+  )
   const history = useMemo(
     () => mergeVideoTasks(localHistory, historyQuery.data?.data?.items ?? []),
     [historyQuery.data?.data?.items, localHistory]
@@ -1203,6 +1260,7 @@ export function VideoGeneration() {
                   disabled={
                     createMutation.isPending ||
                     isUploading ||
+                    hasActiveVideoTask ||
                     (modelsQuery.data?.length ?? 0) === 0
                   }
                 >
@@ -1261,6 +1319,86 @@ export function VideoGeneration() {
             </Alert>
           )}
 
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('Recent video tasks')}</CardTitle>
+              <CardDescription>
+                {t(
+                  'Your latest video generation requests are kept in this browser for up to 24 hours'
+                )}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className='max-h-[38rem] overflow-y-auto'>
+              {history.length === 0 ? (
+                <p className='text-muted-foreground py-8 text-center text-sm'>
+                  {t('No video tasks yet')}
+                </p>
+              ) : (
+                <div className='divide-y'>
+                  {history.map((task) => (
+                    <div
+                      className='flex flex-col gap-3 py-4 first:pt-0 last:pb-0'
+                      key={task.task_id}
+                    >
+                      <div className='min-w-0 space-y-1'>
+                        <div className='flex flex-wrap items-center gap-2'>
+                          <Badge variant={statusVariant(task.status)}>
+                            {t(task.status)}
+                          </Badge>
+                          <span className='truncate font-mono text-xs'>
+                            {task.task_id}
+                          </span>
+                        </div>
+                        <p className='text-muted-foreground truncate text-xs'>
+                          {task.properties?.origin_model_name} ·{' '}
+                          {taskTimestamp(task)}
+                        </p>
+                      </div>
+                      {!TERMINAL_STATUSES.has(task.status) && (
+                        <Progress value={progressValue(task.progress)} />
+                      )}
+                      {task.status === 'FAILURE' && task.fail_reason && (
+                        <p className='text-destructive line-clamp-3 text-xs'>
+                          {task.fail_reason}
+                        </p>
+                      )}
+                      <div className='flex flex-wrap items-center gap-2'>
+                        <Button
+                          className='flex-1'
+                          size='sm'
+                          variant='secondary'
+                          onClick={() => {
+                            setRestoredTask(task)
+                            setCurrentTaskId(task.task_id)
+                          }}
+                        >
+                          {t('View')}
+                        </Button>
+                        {task.status === 'SUCCESS' && task.result_url && (
+                          <Button
+                            className='flex-1'
+                            size='sm'
+                            variant='outline'
+                            render={
+                              <a
+                                href={task.result_url}
+                                target='_blank'
+                                rel='noreferrer'
+                              />
+                            }
+                          >
+                            <ExternalLink />
+                            {t('Open')}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <Alert>
             <Clock3 />
             <AlertTitle>{t('Video links expire after 24 hours')}</AlertTitle>
@@ -1270,81 +1408,6 @@ export function VideoGeneration() {
           </Alert>
         </div>
       </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('Recent video tasks')}</CardTitle>
-          <CardDescription>
-            {t(
-              'Your latest video generation requests are kept in this browser for up to 24 hours'
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {history.length === 0 ? (
-            <p className='text-muted-foreground py-8 text-center text-sm'>
-              {t('No video tasks yet')}
-            </p>
-          ) : (
-            <div className='divide-y'>
-              {history.map((task) => (
-                <div
-                  className='flex flex-col gap-3 py-4 first:pt-0 last:pb-0 md:flex-row md:items-center md:justify-between'
-                  key={task.task_id}
-                >
-                  <div className='min-w-0 space-y-1'>
-                    <div className='flex flex-wrap items-center gap-2'>
-                      <Badge variant={statusVariant(task.status)}>
-                        {t(task.status)}
-                      </Badge>
-                      <span className='truncate font-mono text-xs'>
-                        {task.task_id}
-                      </span>
-                    </div>
-                    <p className='text-muted-foreground truncate text-xs'>
-                      {task.properties?.origin_model_name} ·{' '}
-                      {taskTimestamp(task)}
-                    </p>
-                  </div>
-                  <div className='flex items-center gap-3'>
-                    {!TERMINAL_STATUSES.has(task.status) && (
-                      <div className='w-28'>
-                        <Progress value={progressValue(task.progress)} />
-                      </div>
-                    )}
-                    <Button
-                      size='sm'
-                      variant='ghost'
-                      onClick={() => {
-                        setRestoredTask(task)
-                        setCurrentTaskId(task.task_id)
-                      }}
-                    >
-                      {t('View')}
-                    </Button>
-                    {task.result_url && (
-                      <Button
-                        size='sm'
-                        variant='outline'
-                        render={
-                          <a
-                            href={task.result_url}
-                            target='_blank'
-                            rel='noreferrer'
-                          />
-                        }
-                      >
-                        <ExternalLink />
-                        {t('Open')}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </Main>
   )
 }

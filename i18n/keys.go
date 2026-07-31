@@ -28,6 +28,13 @@ const (
 	MsgBatchTooMany      = "common.batch_too_many"
 )
 
+// Generation concurrency messages
+const (
+	MsgGenerateAlreadyInProgress      = "generation.already_in_progress"
+	MsgGenerateVideoAlreadyInProgress = "generation.video_already_in_progress"
+	MsgGenerateConcurrencyCheckFailed = "generation.concurrency_check_failed"
+)
+
 // Auth middleware messages
 const (
 	MsgAuthNotLoggedIn           = "auth.not_logged_in"

@@ -27,6 +27,7 @@ import {
   writeGenerationHistory,
   writeGenerationRecord,
 } from '../generation-storage'
+import { saveImageGeneration } from './storage'
 
 export type ImageGenerationRequest = {
   model: string
@@ -101,7 +102,7 @@ export async function createImage(
  * Image generation has no server task id, so this is the only way to recover
  * a request when a user switches sections without refreshing the browser.
  */
-export function createImageTracked(
+export async function createImageTracked(
   request: ImageGenerationRequest
 ): Promise<ImageGenerationResponse> {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -109,46 +110,46 @@ export function createImageTracked(
     id: requestId,
     request,
   })
-  const promise = createImage(request)
+  try {
+    const response = await createImage(request)
+    const createdAt = Date.now()
+    const entry: ImageHistoryEntry = {
+      id: requestId,
+      createdAt,
+      model: request.model,
+      prompt: request.prompt,
+      images: response.data ?? [],
+    }
 
-  void promise
-    .then((response) => {
-      writeGenerationRecord('image-latest', {
-        id: requestId,
-        // Do not put base64 image bytes in localStorage. Only an upstream URL
-        // and the descriptive metadata are safe to restore after a reload.
-        images: persistableImages(response.data ?? []),
-      } satisfies TrackedImageResult)
-      const history = readGenerationHistory<ImageHistoryEntry>('image-history')
-      writeGenerationHistory('image-history', [
-        {
-          id: requestId,
-          createdAt: Date.now(),
-          model: request.model,
-          prompt: request.prompt,
-          images: persistableImages(response.data ?? []),
-        },
-        ...history,
-      ])
-      const pending = readGenerationRecord<TrackedImageRequest>(
-        'image-pending',
-        GENERATION_PENDING_TTL_MS
-      )
-      if (pending?.value.id === requestId) {
-        removeGenerationRecord('image-pending')
-      }
-    })
-    .catch(() => {
-      const pending = readGenerationRecord<TrackedImageRequest>(
-        'image-pending',
-        GENERATION_PENDING_TTL_MS
-      )
-      if (pending?.value.id === requestId) {
-        removeGenerationRecord('image-pending')
-      }
-    })
+    // IndexedDB can retain base64 results as browser-local Blobs without
+    // consuming application-server storage. A storage quota/private-mode
+    // failure must not turn a successful generation into a failed request.
+    try {
+      await saveImageGeneration(entry)
+    } catch {
+      // The URL-only localStorage fallback below remains available.
+    }
 
-  return promise
+    const persistable = persistableImages(response.data ?? [])
+    writeGenerationRecord('image-latest', {
+      id: requestId,
+      images: persistable,
+    } satisfies TrackedImageResult)
+    const history = readGenerationHistory<ImageHistoryEntry>('image-history')
+    writeGenerationHistory('image-history', [
+      { ...entry, images: persistable },
+      ...history,
+    ])
+    return response
+  } finally {
+    const pending = readGenerationRecord<TrackedImageRequest>(
+      'image-pending',
+      GENERATION_PENDING_TTL_MS
+    )
+    if (pending?.value.id === requestId) {
+      removeGenerationRecord('image-pending')
+    }
+  }
 }
 
 export async function getImageModels(): Promise<string[]> {
