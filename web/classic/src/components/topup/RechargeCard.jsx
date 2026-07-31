@@ -53,6 +53,29 @@ import SubscriptionPlansCard from './SubscriptionPlansCard';
 
 const { Text } = Typography;
 
+function getAmountDiscount(amount, discounts) {
+  if (!Number.isFinite(amount) || !discounts) return 1.0;
+
+  let matchedThreshold = Number.NEGATIVE_INFINITY;
+  let matchedRate = 1.0;
+  Object.entries(discounts).forEach(([rawThreshold, rawRate]) => {
+    const threshold = Number(rawThreshold);
+    const rate = Number(rawRate);
+    if (
+      !Number.isFinite(threshold) ||
+      !Number.isFinite(rate) ||
+      rate <= 0 ||
+      threshold > amount ||
+      threshold < matchedThreshold
+    ) {
+      return;
+    }
+    matchedThreshold = threshold;
+    matchedRate = rate;
+  });
+  return matchedRate;
+}
+
 const RechargeCard = ({
   t,
   enableOnlineTopUp,
@@ -438,12 +461,13 @@ const RechargeCard = ({
                   <div className='grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2'>
                     {presetAmounts.map((preset, index) => {
                       const discount =
-                        preset.discount ||
-                        topupInfo?.discount?.[preset.value] ||
-                        1.0;
+                        preset.discount ??
+                        getAmountDiscount(preset.value, topupInfo?.discount);
                       const originalPrice = preset.value * priceRatio;
                       const discountedPrice = originalPrice * discount;
                       const hasDiscount = discount < 1.0;
+                      const hasSurcharge = discount > 1.0;
+                      const hasAdjustment = hasDiscount || hasSurcharge;
                       const actualPay = discountedPrice;
                       const save = originalPrice - discountedPrice;
 
@@ -504,15 +528,14 @@ const RechargeCard = ({
                             >
                               <Coins size={18} />
                               {formatLargeNumber(displayValue)} {symbol}
-                              {hasDiscount && (
-                                <Tag style={{ marginLeft: 4 }} color='green'>
-                                  {t('折').includes('off')
-                                    ? (
-                                        (1 - parseFloat(discount)) *
-                                        100
-                                      ).toFixed(1)
-                                    : (discount * 10).toFixed(1)}
-                                  {t('折')}
+                              {hasAdjustment && (
+                                <Tag
+                                  style={{ marginLeft: 4 }}
+                                  color={hasDiscount ? 'green' : 'orange'}
+                                >
+                                  {hasDiscount
+                                    ? `${((1 - discount) * 100).toFixed(1)}% ${t('折')}`
+                                    : `+${((discount - 1) * 100).toFixed(1)}% ${t('手续费')}`}
                                 </Tag>
                               )}
                             </Typography.Title>
@@ -527,7 +550,9 @@ const RechargeCard = ({
                               {displayActualPay.toFixed(2)}，
                               {hasDiscount
                                 ? `${t('节省')} ${symbol}${displaySave.toFixed(2)}`
-                                : `${t('节省')} ${symbol}0.00`}
+                                : hasSurcharge
+                                  ? `${t('手续费')} ${symbol}${Math.abs(displaySave).toFixed(2)}`
+                                  : `${t('节省')} ${symbol}0.00`}
                             </div>
                           </div>
                         </Card>

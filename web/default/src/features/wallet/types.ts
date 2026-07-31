@@ -133,6 +133,7 @@ export interface TopupInfo {
   /** Preset amount options */
   amount_options: number[]
   /** Discount rates by amount */
+  /** Price multipliers keyed by minimum recharge amount. */
   discount: Record<number, number>
   /** Optional topup link for purchasing codes */
   topup_link?: string
@@ -164,7 +165,7 @@ export interface TopupInfo {
 export interface PresetAmount {
   /** Preset amount value */
   value: number
-  /** Optional discount rate (0-1) */
+  /** Optional price multiplier (1.01 = 1% fee, 0.98 = 2% discount). */
   discount?: number
 }
 

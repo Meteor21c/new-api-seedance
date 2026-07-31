@@ -42,8 +42,12 @@ const PaymentConfirmModal = ({
 }) => {
   const hasDiscount =
     discountRate && discountRate > 0 && discountRate < 1 && amountNumber > 0;
-  const originalAmount = hasDiscount ? amountNumber / discountRate : 0;
-  const discountAmount = hasDiscount ? originalAmount - amountNumber : 0;
+  const hasSurcharge = discountRate && discountRate > 1 && amountNumber > 0;
+  const hasAdjustment = hasDiscount || hasSurcharge;
+  const originalAmount = hasAdjustment ? amountNumber / discountRate : 0;
+  const adjustmentAmount = hasAdjustment
+    ? Math.abs(originalAmount - amountNumber)
+    : 0;
   return (
     <Modal
       title={
@@ -82,15 +86,17 @@ const PaymentConfirmModal = ({
                   <Text strong className='font-bold' style={{ color: 'red' }}>
                     {renderAmount()}
                   </Text>
-                  {hasDiscount && (
+                  {hasAdjustment && (
                     <Text size='small' className='text-rose-500'>
-                      {Math.round(discountRate * 100)}%
+                      {hasDiscount
+                        ? `${Math.round(discountRate * 100)}%`
+                        : `+${Math.round((discountRate - 1) * 100)}%`}
                     </Text>
                   )}
                 </div>
               )}
             </div>
-            {hasDiscount && !amountLoading && (
+            {hasAdjustment && !amountLoading && (
               <>
                 <div className='flex justify-between items-center'>
                   <Text className='text-slate-500 dark:text-slate-400'>
@@ -102,10 +108,17 @@ const PaymentConfirmModal = ({
                 </div>
                 <div className='flex justify-between items-center'>
                   <Text className='text-slate-500 dark:text-slate-400'>
-                    {t('优惠')}：
+                    {hasDiscount ? t('优惠') : t('手续费')}：
                   </Text>
-                  <Text className='text-emerald-600 dark:text-emerald-400'>
-                    {`- ${discountAmount.toFixed(2)} ${t('元')}`}
+                  <Text
+                    className={
+                      hasDiscount
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-orange-600 dark:text-orange-400'
+                    }
+                  >
+                    {hasDiscount ? '- ' : '+ '}
+                    {`${adjustmentAmount.toFixed(2)} ${t('元')}`}
                   </Text>
                 </div>
               </>

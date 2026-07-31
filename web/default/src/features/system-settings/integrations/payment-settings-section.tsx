@@ -1103,7 +1103,7 @@ export function PaymentSettingsSection({
                           ) : (
                             <Textarea
                               rows={4}
-                              placeholder='{"100":0.95,"200":0.9}'
+                              placeholder='{"10":1.01,"50":1,"100":0.98,"500":0.9}'
                               {...field}
                               onChange={(event) =>
                                 field.onChange(event.target.value)
@@ -1112,7 +1112,9 @@ export function PaymentSettingsSection({
                           )}
                         </FormControl>
                         <FormDescription>
-                          {t('Discount map by recharge amount (JSON object)')}
+                          {t(
+                            'Tier multipliers by minimum recharge amount (JSON object)'
+                          )}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>

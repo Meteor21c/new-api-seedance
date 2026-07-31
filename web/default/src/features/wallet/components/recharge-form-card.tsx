@@ -39,6 +39,7 @@ import { cn } from '@/lib/utils'
 import {
   formatCurrency,
   getDiscountLabel,
+  getAmountDiscount,
   getPaymentIcon,
   getMinTopupAmount,
   calculatePresetPricing,
@@ -222,14 +223,15 @@ export function RechargeFormCard({
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 md:grid-cols-4'>
                     {presetAmounts.map((preset, index) => {
                       const discount =
-                        preset.discount ||
-                        topupInfo?.discount?.[preset.value] ||
-                        1.0
+                        preset.discount ??
+                        getAmountDiscount(preset.value, topupInfo?.discount)
                       const {
                         displayValue,
                         actualPrice,
                         savedAmount,
                         hasDiscount,
+                        hasSurcharge,
+                        hasAdjustment,
                       } = calculatePresetPricing(
                         preset.value,
                         priceRatio,
@@ -252,8 +254,15 @@ export function RechargeFormCard({
                             <div className='text-base font-semibold sm:text-lg'>
                               {formatNumber(displayValue)}
                             </div>
-                            {hasDiscount && (
-                              <div className='text-xs font-medium text-green-600'>
+                            {hasAdjustment && (
+                              <div
+                                className={cn(
+                                  'text-xs font-medium',
+                                  hasDiscount
+                                    ? 'text-green-600'
+                                    : 'text-amber-600'
+                                )}
+                              >
                                 {getDiscountLabel(discount)}
                               </div>
                             )}
@@ -264,6 +273,12 @@ export function RechargeFormCard({
                               <span className='text-green-600'>
                                 {' '}
                                 • Save {formatCurrency(savedAmount)}
+                              </span>
+                            )}
+                            {hasSurcharge && savedAmount < 0 && (
+                              <span className='text-amber-600'>
+                                {' '}
+                                • Fee {formatCurrency(Math.abs(savedAmount))}
                               </span>
                             )}
                           </div>

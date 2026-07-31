@@ -151,6 +151,41 @@ export function generatePresetAmounts(minAmount: number): PresetAmount[] {
 }
 
 /**
+ * Resolve a recharge multiplier from minimum-amount tiers. The highest
+ * configured threshold that is no greater than the amount wins.
+ */
+export function getAmountDiscount(
+  amount: number,
+  discounts: Record<number, number> | undefined
+): number {
+  if (!discounts || !Number.isFinite(amount)) {
+    return 1.0
+  }
+
+  let matchedThreshold = Number.NEGATIVE_INFINITY
+  let matchedRate = 1.0
+
+  for (const [rawThreshold, rawRate] of Object.entries(discounts)) {
+    const threshold = Number(rawThreshold)
+    const rate = Number(rawRate)
+    if (
+      !Number.isFinite(threshold) ||
+      !Number.isFinite(rate) ||
+      rate <= 0 ||
+      threshold > amount ||
+      threshold < matchedThreshold
+    ) {
+      continue
+    }
+
+    matchedThreshold = threshold
+    matchedRate = rate
+  }
+
+  return matchedRate
+}
+
+/**
  * Merge custom preset amounts with discounts
  */
 export function mergePresetAmounts(
@@ -163,6 +198,6 @@ export function mergePresetAmounts(
 
   return amountOptions.map((amount) => ({
     value: amount,
-    discount: discounts[amount] || 1.0,
+    discount: getAmountDiscount(amount, discounts),
   }))
 }

@@ -63,8 +63,12 @@ export function PaymentConfirmDialog({
 }: PaymentConfirmDialogProps) {
   const { t } = useTranslation()
   const hasDiscount = discountRate > 0 && discountRate < 1 && paymentAmount > 0
-  const originalAmount = hasDiscount ? paymentAmount / discountRate : 0
-  const discountAmount = hasDiscount ? originalAmount - paymentAmount : 0
+  const hasSurcharge = discountRate > 1 && paymentAmount > 0
+  const hasAdjustment = hasDiscount || hasSurcharge
+  const originalAmount = hasAdjustment ? paymentAmount / discountRate : 0
+  const adjustmentAmount = hasAdjustment
+    ? Math.abs(originalAmount - paymentAmount)
+    : 0
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -103,7 +107,7 @@ export function PaymentConfirmDialog({
                 <span className='text-2xl font-semibold'>
                   {formatCurrency(paymentAmount)}
                 </span>
-                {hasDiscount && (
+                {hasAdjustment && (
                   <span className='text-muted-foreground text-sm line-through'>
                     {formatCurrency(originalAmount)}
                   </span>
@@ -112,12 +116,20 @@ export function PaymentConfirmDialog({
             )}
           </div>
 
-          {hasDiscount && !calculating && (
+          {hasAdjustment && !calculating && (
             <div className='bg-muted/50 rounded-lg p-3'>
               <div className='flex items-center justify-between text-sm'>
-                <span className='text-muted-foreground'>{t('You save')}</span>
-                <span className='font-semibold text-green-600'>
-                  {formatCurrency(discountAmount)}
+                <span className='text-muted-foreground'>
+                  {hasDiscount ? t('You save') : t('Fee')}
+                </span>
+                <span
+                  className={
+                    hasDiscount
+                      ? 'font-semibold text-green-600'
+                      : 'font-semibold text-amber-600'
+                  }
+                >
+                  {formatCurrency(adjustmentAmount)}
                 </span>
               </div>
             </div>

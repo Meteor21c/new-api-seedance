@@ -44,6 +44,7 @@ import {
 } from './hooks'
 import {
   getDefaultPaymentType,
+  getAmountDiscount,
   getMinTopupAmount,
   isWaffoPancakePayment,
 } from './lib'
@@ -249,7 +250,10 @@ export function Wallet(props: WalletProps) {
 
   // Get discount rate for current topup amount
   const getDiscountRate = useCallback(() => {
-    return topupInfo?.discount?.[topupAmount] || DEFAULT_DISCOUNT_RATE
+    return (
+      getAmountDiscount(topupAmount, topupInfo?.discount) ||
+      DEFAULT_DISCOUNT_RATE
+    )
   }, [topupInfo, topupAmount])
 
   const handleSubscriptionAvailabilityChange = useCallback(

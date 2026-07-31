@@ -38,7 +38,7 @@ export default function SettingsGeneralPayment(props) {
     TopupGroupRatio: '',
     PayMethods: '',
     AmountOptions: '',
-    AmountDiscount: '',
+    AmountDiscount: '{"10":1.01,"50":1,"100":0.98,"500":0.9}',
   });
   const [originInputs, setOriginInputs] = useState({});
   const formApiRef = useRef(null);
@@ -51,7 +51,9 @@ export default function SettingsGeneralPayment(props) {
         TopupGroupRatio: props.options.TopupGroupRatio || '',
         PayMethods: props.options.PayMethods || '',
         AmountOptions: props.options.AmountOptions || '',
-        AmountDiscount: props.options.AmountDiscount || '',
+        AmountDiscount:
+          props.options.AmountDiscount ||
+          '{"10":1.01,"50":1,"100":0.98,"500":0.9}',
       };
       setInputs(currentInputs);
       setOriginInputs({ ...currentInputs });
@@ -227,13 +229,13 @@ export default function SettingsGeneralPayment(props) {
             <Col span={24}>
               <Form.TextArea
                 field='AmountDiscount'
-                label={t('充值金额折扣配置')}
+                label={t('充值金额阶梯计价配置')}
                 placeholder={t(
-                  '为一个 JSON 对象，例如：{"100": 0.95, "200": 0.9, "500": 0.85}',
+                  '为一个 JSON 对象，例如：{"10": 1.01, "50": 1, "100": 0.98, "500": 0.9}',
                 )}
                 autosize
                 extraText={t(
-                  '设置不同充值金额对应的折扣，键为充值金额，值为折扣率，例如：{"100": 0.95, "200": 0.9, "500": 0.85}',
+                  '键为最低充值金额，值为价格乘数；按最高匹配金额生效。1.01 表示加收 1%，1 表示原价，0.98 表示 98 折，0.9 表示 9 折。',
                 )}
               />
             </Col>

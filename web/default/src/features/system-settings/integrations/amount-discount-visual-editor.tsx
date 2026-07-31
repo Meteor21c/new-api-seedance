@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -35,6 +35,13 @@ import {
 type AmountDiscountVisualEditorProps = {
   value: string
   onChange: (value: string) => void
+}
+
+const RECOMMENDED_AMOUNT_DISCOUNTS = {
+  10: 1.01,
+  50: 1,
+  100: 0.98,
+  500: 0.9,
 }
 
 export function AmountDiscountVisualEditor({
@@ -59,7 +66,9 @@ export function AmountDiscountVisualEditor({
         discountRate:
           typeof rate === 'number' ? rate : Number.parseFloat(String(rate)),
       }))
-      .filter((item) => !isNaN(item.amount) && !isNaN(item.discountRate))
+      .filter(
+        (item) => !Number.isNaN(item.amount) && !Number.isNaN(item.discountRate)
+      )
       .sort((a, b) => a.amount - b.amount)
   }, [value])
 
@@ -107,31 +116,51 @@ export function AmountDiscountVisualEditor({
     setDialogOpen(true)
   }
 
-  const formatPercentage = (rate: number) => {
-    if (rate >= 1) return '0%'
-    const discount = Math.round((1 - rate) * 100)
-    return `${discount}%`
+  const applyRecommendedTiers = () => {
+    onChange(JSON.stringify(RECOMMENDED_AMOUNT_DISCOUNTS, null, 2))
+  }
+
+  const formatMultiplierLabel = (rate: number) => {
+    if (rate === 1) return t('No fee')
+    if (rate > 1) return `+${Math.round((rate - 1) * 100)}% ${t('fee')}`
+    return `${Math.round((1 - rate) * 100)}% ${t('off')}`
   }
 
   return (
     <div className='space-y-4'>
       <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
         <p className='text-muted-foreground text-sm'>
-          {t('Configure discount rates based on recharge amounts')}
+          {t('Configure price multipliers by minimum recharge amount')}
         </p>
-        <Button
-          type='button'
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            handleAdd()
-          }}
-          size='sm'
-          className='w-full sm:w-auto'
-        >
-          <Plus className='h-4 w-4 sm:mr-2' />
-          <span className='sm:inline'>{t('Add discount tier')}</span>
-        </Button>
+        <div className='flex w-full flex-col gap-2 sm:w-auto sm:flex-row'>
+          <Button
+            type='button'
+            variant='outline'
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              applyRecommendedTiers()
+            }}
+            size='sm'
+            className='w-full sm:w-auto'
+          >
+            <Sparkles className='h-4 w-4 sm:mr-2' />
+            <span>{t('Use recommended tiers')}</span>
+          </Button>
+          <Button
+            type='button'
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              handleAdd()
+            }}
+            size='sm'
+            className='w-full sm:w-auto'
+          >
+            <Plus className='h-4 w-4 sm:mr-2' />
+            <span className='sm:inline'>{t('Add discount tier')}</span>
+          </Button>
+        </div>
       </div>
 
       {discounts.length === 0 ? (
@@ -150,14 +179,16 @@ export function AmountDiscountVisualEditor({
             columns={[
               {
                 id: 'amount',
-                header: t('Recharge Amount'),
+                header: t('Minimum Recharge Amount'),
                 cell: (discount) => (
-                  <span className='font-mono text-sm'>${discount.amount}</span>
+                  <span className='font-mono text-sm'>
+                    {t('From')} ${discount.amount}
+                  </span>
                 ),
               },
               {
                 id: 'discount-rate',
-                header: t('Discount Rate'),
+                header: t('Price Multiplier'),
                 cell: (discount) => (
                   <code className='bg-muted rounded px-1.5 py-0.5 text-sm'>
                     {discount.discountRate.toFixed(2)}
@@ -173,7 +204,7 @@ export function AmountDiscountVisualEditor({
                     className='font-mono'
                     copyable={false}
                   >
-                    {formatPercentage(discount.discountRate)} {t('off')}
+                    {formatMultiplierLabel(discount.discountRate)}
                   </StatusBadge>
                 ),
               },
@@ -202,14 +233,14 @@ export function AmountDiscountVisualEditor({
                 <div className='mb-3 flex items-start justify-between'>
                   <div className='flex-1'>
                     <div className='mb-2 font-mono text-base font-medium'>
-                      ${discount.amount}
+                      {t('From')} ${discount.amount}
                     </div>
                     <StatusBadge
                       variant={discount.discountRate < 1 ? 'info' : 'neutral'}
                       className='font-mono'
                       copyable={false}
                     >
-                      {formatPercentage(discount.discountRate)} {t('off')}
+                      {formatMultiplierLabel(discount.discountRate)}
                     </StatusBadge>
                   </div>
                   <div className='flex gap-1'>
@@ -241,7 +272,7 @@ export function AmountDiscountVisualEditor({
                 </div>
                 <div className='text-sm'>
                   <span className='text-muted-foreground'>
-                    {t('Discount Rate:')}{' '}
+                    {t('Price Multiplier:')}{' '}
                   </span>
                   <code className='bg-muted rounded px-1.5 py-0.5 text-xs'>
                     {discount.discountRate.toFixed(2)}

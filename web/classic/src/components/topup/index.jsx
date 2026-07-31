@@ -57,6 +57,31 @@ function isSafeHttpCheckoutUrl(value) {
   }
 }
 
+// AmountDiscount is configured as minimum recharge amount tiers. Select the
+// highest threshold that is not greater than the requested amount.
+function getAmountDiscount(amount, discounts) {
+  if (!Number.isFinite(amount) || !discounts) return 1.0;
+
+  let matchedThreshold = Number.NEGATIVE_INFINITY;
+  let matchedRate = 1.0;
+  Object.entries(discounts).forEach(([rawThreshold, rawRate]) => {
+    const threshold = Number(rawThreshold);
+    const rate = Number(rawRate);
+    if (
+      !Number.isFinite(threshold) ||
+      !Number.isFinite(rate) ||
+      rate <= 0 ||
+      threshold > amount ||
+      threshold < matchedThreshold
+    ) {
+      return;
+    }
+    matchedThreshold = threshold;
+    matchedRate = rate;
+  });
+  return matchedRate;
+}
+
 const TopUp = () => {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -712,7 +737,7 @@ const TopUp = () => {
         if (data.amount_options && data.amount_options.length > 0) {
           const customPresets = data.amount_options.map((amount) => ({
             value: amount,
-            discount: data.discount[amount] || 1.0,
+            discount: getAmountDiscount(amount, data.discount),
           }));
           setPresetAmounts(customPresets);
         }
@@ -884,7 +909,8 @@ const TopUp = () => {
     setSelectedPreset(preset.value);
 
     // 计算实际支付金额，考虑折扣
-    const discount = preset.discount || topupInfo.discount[preset.value] || 1.0;
+    const discount =
+      preset.discount ?? getAmountDiscount(preset.value, topupInfo.discount);
     const discountedAmount = preset.value * priceRatio * discount;
     setAmount(discountedAmount);
   };
@@ -931,7 +957,7 @@ const TopUp = () => {
         payWay={payWay}
         payMethods={confirmPayMethods}
         amountNumber={amount}
-        discountRate={topupInfo?.discount?.[topUpCount] || 1.0}
+        discountRate={getAmountDiscount(topUpCount, topupInfo?.discount)}
       />
 
       {/* 充值账单模态框 */}
