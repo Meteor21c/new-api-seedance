@@ -112,9 +112,7 @@ func GetUserGenerationModels(c *gin.Context) {
 	}
 
 	items := make([]generationModel, 0)
-	fallbackItems := make([]generationModel, 0)
 	seen := make(map[string]struct{})
-	fallbackSeen := make(map[string]struct{})
 	for _, binding := range bindings {
 		name := strings.TrimSpace(binding.Model)
 		if name == "" {
@@ -133,23 +131,12 @@ func GetUserGenerationModels(c *gin.Context) {
 			continue
 		}
 
-		if _, exists := fallbackSeen[name]; !exists {
-			fallbackItems = append(fallbackItems, item)
-			fallbackSeen[name] = struct{}{}
-		}
 		if supportsImageGeneration(name) || supportsImageGeneration(upstreamName) {
 			items = append(items, item)
 			seen[name] = struct{}{}
 		}
 	}
 
-	fallback := false
-	if kind == "image" && len(items) == 0 {
-		// Custom aliases may not have model metadata. Keep the UI selectable
-		// instead of forcing users to type a model name manually.
-		items = fallbackItems
-		fallback = len(items) > 0
-	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].ID < items[j].ID
 	})
@@ -158,6 +145,6 @@ func GetUserGenerationModels(c *gin.Context) {
 		"success":  true,
 		"message":  "",
 		"data":     items,
-		"fallback": fallback,
+		"fallback": false,
 	})
 }

@@ -132,8 +132,49 @@ func TestGetUserGenerationModelsFiltersMappedImageModels(t *testing.T) {
 		"my-chat",
 		`{"my-chat":"gpt-5"}`,
 	)
+	insertGenerationModelBinding(
+		t,
+		3,
+		constant.ChannelTypeOpenAI,
+		"gpt-image-2-pro",
+		"",
+	)
 
 	response := requestGenerationModels(t, "image")
-	require.Equal(t, []generationModel{{ID: "my-image"}}, response.Data)
+	require.Equal(t, []generationModel{
+		{ID: "gpt-image-2-pro"},
+		{ID: "my-image"},
+	}, response.Data)
+	require.False(t, response.Fallback)
+}
+
+func TestGetUserGenerationModelsDoesNotFallBackToNonImageModels(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{
+		Id:       1,
+		Username: "chat-only-user",
+		Password: "password",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}).Error)
+
+	insertGenerationModelBinding(
+		t,
+		1,
+		constant.ChannelTypeOpenAI,
+		"claude-sonnet-5",
+		"",
+	)
+	insertGenerationModelBinding(
+		t,
+		2,
+		constant.ChannelTypeFZYingheVideo,
+		"seedance-2.0",
+		`{"seedance-2.0":"cheap-seedance-2.0"}`,
+	)
+
+	response := requestGenerationModels(t, "image")
+	require.Empty(t, response.Data)
 	require.False(t, response.Fallback)
 }
