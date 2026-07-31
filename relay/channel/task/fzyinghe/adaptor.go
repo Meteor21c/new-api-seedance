@@ -241,21 +241,21 @@ func (value *flexibleInt64) UnmarshalJSON(data []byte) error {
 }
 
 type upstreamTask struct {
-	TaskID        string             `json:"taskId,omitempty"`
-	TaskIDSnake   string             `json:"task_id,omitempty"`
-	ID            string             `json:"id,omitempty"`
-	Status        string             `json:"status,omitempty"`
-	TaskStatus    string             `json:"task_status,omitempty"`
-	TaskStatusMsg string             `json:"task_status_msg,omitempty"`
-	TaskResult    upstreamTaskResult `json:"task_result,omitempty"`
+	TaskID         string             `json:"taskId,omitempty"`
+	TaskIDSnake    string             `json:"task_id,omitempty"`
+	ID             string             `json:"id,omitempty"`
+	Status         string             `json:"status,omitempty"`
+	TaskStatus     string             `json:"task_status,omitempty"`
+	TaskStatusMsg  string             `json:"task_status_msg,omitempty"`
+	TaskResult     upstreamTaskResult `json:"task_result,omitempty"`
 	CreatedAt      flexibleInt64      `json:"createdAt,omitempty"`
 	CreatedAtSnake flexibleInt64      `json:"created_at,omitempty"`
-	ResultURL     string             `json:"resultUrl,omitempty"`
-	URL           string             `json:"url,omitempty"`
-	ThumbnailURL  string             `json:"thumbnailUrl,omitempty"`
-	FailReason    string             `json:"failReason,omitempty"`
-	URLExpiresAt  string             `json:"url_expires_at,omitempty"`
-	Error         *upstreamError     `json:"error,omitempty"`
+	ResultURL      string             `json:"resultUrl,omitempty"`
+	URL            string             `json:"url,omitempty"`
+	ThumbnailURL   string             `json:"thumbnailUrl,omitempty"`
+	FailReason     string             `json:"failReason,omitempty"`
+	URLExpiresAt   string             `json:"url_expires_at,omitempty"`
+	Error          *upstreamError     `json:"error,omitempty"`
 }
 
 type upstreamEnvelope struct {

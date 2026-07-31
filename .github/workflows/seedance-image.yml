@@ -58,7 +58,7 @@ jobs:
 
       - name: Test backend additions
         run: |
-          unformatted="$(gofmt -l \
+          test -z "$(gofmt -l \
             common/endpoint_type.go \
             common/model.go \
             controller/generation_models.go \
@@ -73,10 +73,6 @@ jobs:
             router/material-router.go \
             router/relay-router.go \
             router/video-router.go)"
-          echo "Unformatted Go files:"
-          printf '%s\\n' "$unformatted"
-          gofmt -d relay/channel/task/fzyinghe/adaptor.go
-          test -z "$unformatted"
           go test ./relay/channel/task/fzyinghe
           go test ./controller ./middleware ./relay ./router
 
