@@ -1,0 +1,26 @@
+package router
+
+import (
+	"github.com/QuantumNous/new-api/controller"
+	"github.com/QuantumNous/new-api/middleware"
+
+	"github.com/gin-gonic/gin"
+)
+
+func SetMaterialRouter(router *gin.Engine) {
+	playgroundRouter := router.Group("/pg/materials")
+	playgroundRouter.Use(middleware.RouteTag("relay"))
+	playgroundRouter.Use(middleware.SystemPerformanceCheck())
+	playgroundRouter.Use(middleware.UserAuth())
+	{
+		playgroundRouter.POST("/uploads", controller.CreateMaterialUpload)
+	}
+
+	apiRouter := router.Group("/v1/materials")
+	apiRouter.Use(middleware.RouteTag("relay"))
+	apiRouter.Use(middleware.SystemPerformanceCheck())
+	apiRouter.Use(middleware.TokenAuth())
+	{
+		apiRouter.POST("/uploads", controller.CreateMaterialUpload)
+	}
+}

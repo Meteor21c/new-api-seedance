@@ -44,6 +44,35 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"create_video"`)
 	assert.Contains(t, recorder.Body.String(), `"get_video"`)
 	assert.Contains(t, recorder.Body.String(), `"create_image"`)
+	assert.Contains(t, recorder.Body.String(), `"create_material_upload"`)
+}
+
+func TestMCPCreateMaterialUploadCallsInternalAPI(t *testing.T) {
+	originalHandler := mcpInternalHandler
+	t.Cleanup(func() {
+		mcpInternalHandler = originalHandler
+	})
+
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, http.MethodPost, request.Method)
+		assert.Equal(t, "/v1/materials/uploads", request.URL.Path)
+		assert.Equal(t, "Bearer sk-test", request.Header.Get("Authorization"))
+		requestBody, err := io.ReadAll(request.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(requestBody), `"file_name":"start.png"`)
+		assert.Contains(t, string(requestBody), `"size_bytes":1234`)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"material_id":"signed-material","upload_url":"https://example.com/upload","method":"PUT","headers":{"Content-Type":"image/png"}}`))
+	})
+
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"create_material_upload","arguments":{"file_name":"start.png","content_type":"image/png","size_bytes":1234}}}`,
+	)
+	MCP(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"material_id":"signed-material"`)
+	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
 }
 
 func TestMCPCreateImageCallsInternalAPI(t *testing.T) {

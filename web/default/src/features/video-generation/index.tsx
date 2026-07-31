@@ -23,8 +23,8 @@ import {
   Clock3,
   ExternalLink,
   Film,
+  ImagePlus,
   LoaderCircle,
-  Sparkles,
   Volume2,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
@@ -59,7 +59,7 @@ import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
-import { createVideo, getVideoTask, getVideoTasks } from './api'
+import { createVideo, getVideoTask, getVideoTasks, uploadMaterial } from './api'
 import {
   VIDEO_ASPECT_RATIOS,
   VIDEO_MODELS,
@@ -70,39 +70,26 @@ import {
   type VideoTask,
 } from './types'
 
-const videoFormSchema = z
-  .object({
-    model: z.enum(VIDEO_MODELS),
-    prompt: z
-      .string()
-      .trim()
-      .min(1, 'Prompt is required')
-      .max(1300, 'Prompt must not exceed 1300 characters'),
-    duration: z
-      .number()
-      .int()
-      .min(4, 'Duration must be at least 4 seconds')
-      .max(15, 'Duration must not exceed 15 seconds'),
-    resolution: z.enum(['480p', '720p', '1080p', '4K']),
-    aspectRatio: z.enum(VIDEO_ASPECT_RATIOS),
-    mode: z.enum(VIDEO_MODES),
-    audio: z.boolean(),
-    referenceUrls: z.string(),
-    startImageUrl: z.string(),
-    endImageUrl: z.string(),
-  })
-  .superRefine((value, context) => {
-    if (
-      value.mode === 'start_end_frame' &&
-      (!value.startImageUrl.trim() || !value.endImageUrl.trim())
-    ) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Start and end image URLs are required for this mode',
-        path: ['startImageUrl'],
-      })
-    }
-  })
+const videoFormSchema = z.object({
+  model: z.enum(VIDEO_MODELS),
+  prompt: z
+    .string()
+    .trim()
+    .min(1, 'Prompt is required')
+    .max(1300, 'Prompt must not exceed 1300 characters'),
+  duration: z
+    .number()
+    .int()
+    .min(4, 'Duration must be at least 4 seconds')
+    .max(15, 'Duration must not exceed 15 seconds'),
+  resolution: z.enum(['480p', '720p', '1080p', '4K']),
+  aspectRatio: z.enum(VIDEO_ASPECT_RATIOS),
+  mode: z.enum(VIDEO_MODES),
+  audio: z.boolean(),
+  referenceUrls: z.string(),
+  startImageUrl: z.string(),
+  endImageUrl: z.string(),
+})
 
 type VideoFormValues = z.infer<typeof videoFormSchema>
 
@@ -214,6 +201,10 @@ export function VideoGeneration() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [currentTaskId, setCurrentTaskId] = useState('')
+  const [referenceFiles, setReferenceFiles] = useState<File[]>([])
+  const [startFrameFile, setStartFrameFile] = useState<File | null>(null)
+  const [endFrameFile, setEndFrameFile] = useState<File | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
 
   const form = useForm<VideoFormValues>({
     resolver: zodResolver(videoFormSchema),
@@ -274,25 +265,62 @@ export function VideoGeneration() {
     },
   })
 
-  const onSubmit = (values: VideoFormValues) => {
-    const referenceImages = splitReferenceUrls(values.referenceUrls)
-    const request: VideoGenerationRequest = {
-      model: values.model,
-      prompt: values.prompt.trim(),
-      duration: values.duration,
-      resolution: values.resolution,
-      aspect_ratio: values.aspectRatio,
-      mode: values.mode,
-      audio: values.audio,
+  const onSubmit = async (values: VideoFormValues) => {
+    if (
+      values.mode === 'start_end_frame' &&
+      !startFrameFile &&
+      !values.startImageUrl.trim()
+    ) {
+      toast.error(t('Select a start frame image or enter its URL'))
+      return
     }
-    if (referenceImages.length > 0) {
-      request.reference_images = referenceImages
+    if (
+      values.mode === 'start_end_frame' &&
+      !endFrameFile &&
+      !values.endImageUrl.trim()
+    ) {
+      toast.error(t('Select an end frame image or enter its URL'))
+      return
     }
-    if (values.mode === 'start_end_frame') {
-      request.start_image_url = values.startImageUrl.trim()
-      request.end_image_url = values.endImageUrl.trim()
+
+    setIsUploading(true)
+    try {
+      const referenceImages = splitReferenceUrls(values.referenceUrls)
+      const request: VideoGenerationRequest = {
+        model: values.model,
+        prompt: values.prompt.trim(),
+        duration: values.duration,
+        resolution: values.resolution,
+        aspect_ratio: values.aspectRatio,
+        mode: values.mode,
+        audio: values.audio,
+      }
+      if (referenceImages.length > 0) {
+        request.reference_images = referenceImages
+      }
+      if (values.mode === 'text_with_reference' && referenceFiles.length > 0) {
+        request.reference_material_ids = await Promise.all(
+          referenceFiles.map(uploadMaterial)
+        )
+      }
+      if (values.mode === 'start_end_frame') {
+        if (startFrameFile) {
+          request.start_material_id = await uploadMaterial(startFrameFile)
+        } else {
+          request.start_image_url = values.startImageUrl.trim()
+        }
+        if (endFrameFile) {
+          request.end_material_id = await uploadMaterial(endFrameFile)
+        } else {
+          request.end_image_url = values.endImageUrl.trim()
+        }
+      }
+      createMutation.mutate(request)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Upload failed'))
+    } finally {
+      setIsUploading(false)
     }
-    createMutation.mutate(request)
   }
 
   const currentTask = currentTaskQuery.data?.data
@@ -315,7 +343,9 @@ export function VideoGeneration() {
           <CardHeader>
             <CardTitle>{t('Generation settings')}</CardTitle>
             <CardDescription>
-              {t('Reference assets must use public HTTP or HTTPS URLs')}
+              {t(
+                'Upload local images directly to temporary OSS storage, or use public HTTP/HTTPS URLs'
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -504,31 +534,59 @@ export function VideoGeneration() {
                 </div>
 
                 {mode === 'text_with_reference' && (
-                  <FormField
-                    control={form.control}
-                    name='referenceUrls'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Reference asset URLs')}</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            className='min-h-24 font-mono text-xs'
-                            placeholder={[
-                              'https://cdn.example.com/reference.jpg',
-                              'reference:https://cdn.example.com/audio.mp3',
-                            ].join('\n')}
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          {t(
-                            'One URL per line. Supports JPG, PNG, WEBP, MP3, WAV, and MP4.'
-                          )}
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <div className='space-y-4'>
+                    <FormItem>
+                      <FormLabel>{t('Upload reference images')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='file'
+                          accept='image/jpeg,image/png,image/webp'
+                          multiple
+                          onChange={(event) =>
+                            setReferenceFiles(
+                              [...(event.target.files ?? [])].slice(0, 9)
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {referenceFiles.length > 0
+                          ? t('{{count}} image(s) selected', {
+                              count: referenceFiles.length,
+                            })
+                          : t(
+                              'JPG, PNG, or WEBP; up to 10 MiB each. Files upload directly to OSS.'
+                            )}
+                      </FormDescription>
+                    </FormItem>
+                    <FormField
+                      control={form.control}
+                      name='referenceUrls'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {t('Additional reference URLs')}
+                          </FormLabel>
+                          <FormControl>
+                            <Textarea
+                              className='min-h-24 font-mono text-xs'
+                              placeholder={[
+                                'https://cdn.example.com/reference.jpg',
+                                'reference:https://cdn.example.com/audio.mp3',
+                              ].join('\n')}
+                              {...field}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'Optional. One URL per line; audio and MP4 references still require a URL.'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
                 )}
 
                 {mode === 'start_end_frame' && (
@@ -538,14 +596,32 @@ export function VideoGeneration() {
                       name='startImageUrl'
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>{t('Start image URL')}</FormLabel>
+                          <FormLabel>{t('Start frame')}</FormLabel>
                           <FormControl>
-                            <Input
-                              type='url'
-                              placeholder='https://cdn.example.com/start.png'
-                              {...field}
-                            />
+                            <div className='space-y-2'>
+                              <Input
+                                type='file'
+                                accept='image/jpeg,image/png,image/webp'
+                                onChange={(event) =>
+                                  setStartFrameFile(
+                                    event.target.files?.[0] ?? null
+                                  )
+                                }
+                              />
+                              <Input
+                                type='url'
+                                disabled={startFrameFile !== null}
+                                placeholder={t('Or enter a public image URL')}
+                                {...field}
+                              />
+                            </div>
                           </FormControl>
+                          <FormDescription>
+                            {startFrameFile?.name ??
+                              t(
+                                'A selected local file takes priority over URL'
+                              )}
+                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -555,14 +631,32 @@ export function VideoGeneration() {
                       name='endImageUrl'
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>{t('End image URL')}</FormLabel>
+                          <FormLabel>{t('End frame')}</FormLabel>
                           <FormControl>
-                            <Input
-                              type='url'
-                              placeholder='https://cdn.example.com/end.png'
-                              {...field}
-                            />
+                            <div className='space-y-2'>
+                              <Input
+                                type='file'
+                                accept='image/jpeg,image/png,image/webp'
+                                onChange={(event) =>
+                                  setEndFrameFile(
+                                    event.target.files?.[0] ?? null
+                                  )
+                                }
+                              />
+                              <Input
+                                type='url'
+                                disabled={endFrameFile !== null}
+                                placeholder={t('Or enter a public image URL')}
+                                {...field}
+                              />
+                            </div>
                           </FormControl>
+                          <FormDescription>
+                            {endFrameFile?.name ??
+                              t(
+                                'A selected local file takes priority over URL'
+                              )}
+                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -595,14 +689,14 @@ export function VideoGeneration() {
                   className='w-full'
                   size='lg'
                   type='submit'
-                  disabled={createMutation.isPending}
+                  disabled={createMutation.isPending || isUploading}
                 >
-                  {createMutation.isPending ? (
+                  {createMutation.isPending || isUploading ? (
                     <LoaderCircle className='animate-spin' />
                   ) : (
-                    <Sparkles />
+                    <ImagePlus />
                   )}
-                  {t('Generate video')}
+                  {isUploading ? t('Uploading images') : t('Generate video')}
                 </Button>
               </form>
             </Form>

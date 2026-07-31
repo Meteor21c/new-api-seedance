@@ -50,8 +50,19 @@ export interface VideoGenerationRequest {
   mode: VideoMode
   audio: boolean
   reference_images?: string[]
+  reference_material_ids?: string[]
   start_image_url?: string
   end_image_url?: string
+  start_material_id?: string
+  end_material_id?: string
+}
+
+export interface MaterialUploadResponse {
+  material_id: string
+  upload_url: string
+  method: string
+  headers: Record<string, string>
+  expires_at: number
 }
 
 export interface VideoCreateResponse {

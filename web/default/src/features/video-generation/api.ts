@@ -20,11 +20,50 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  MaterialUploadResponse,
   VideoCreateResponse,
   VideoGenerationRequest,
   VideoTaskListResponse,
   VideoTaskResponse,
 } from './types'
+
+function materialContentType(file: File): string {
+  if (file.type) return file.type
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg'
+  if (extension === 'png') return 'image/png'
+  if (extension === 'webp') return 'image/webp'
+  return ''
+}
+
+export async function uploadMaterial(file: File): Promise<string> {
+  const contentType = materialContentType(file)
+  const response = await api.post<MaterialUploadResponse>(
+    '/pg/materials/uploads',
+    {
+      file_name: file.name,
+      content_type: contentType,
+      size_bytes: file.size,
+    },
+    { skipErrorHandler: true }
+  )
+  const upload = response.data
+  const headers = new Headers()
+  Object.entries(upload.headers ?? {}).forEach(([name, value]) => {
+    if (name.toLowerCase() !== 'content-length') {
+      headers.set(name, value)
+    }
+  })
+  const uploadResponse = await fetch(upload.upload_url, {
+    method: upload.method || 'PUT',
+    headers,
+    body: file,
+  })
+  if (!uploadResponse.ok) {
+    throw new Error(`OSS upload failed with HTTP ${uploadResponse.status}`)
+  }
+  return upload.material_id
+}
 
 export async function createVideo(
   request: VideoGenerationRequest

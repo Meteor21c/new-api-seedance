@@ -83,13 +83,16 @@ var allowedModes = map[string]bool{
 }
 
 type inputOptions struct {
-	Name            string   `json:"name,omitempty"`
-	AspectRatio     string   `json:"aspect_ratio,omitempty"`
-	Resolution      string   `json:"resolution,omitempty"`
-	Audio           *bool    `json:"audio,omitempty"`
-	ReferenceImages []string `json:"reference_images,omitempty"`
-	StartImageURL   string   `json:"start_image_url,omitempty"`
-	EndImageURL     string   `json:"end_image_url,omitempty"`
+	Name                 string   `json:"name,omitempty"`
+	AspectRatio          string   `json:"aspect_ratio,omitempty"`
+	Resolution           string   `json:"resolution,omitempty"`
+	Audio                *bool    `json:"audio,omitempty"`
+	ReferenceImages      []string `json:"reference_images,omitempty"`
+	ReferenceMaterialIDs []string `json:"reference_material_ids,omitempty"`
+	StartImageURL        string   `json:"start_image_url,omitempty"`
+	EndImageURL          string   `json:"end_image_url,omitempty"`
+	StartMaterialID      string   `json:"start_material_id,omitempty"`
+	EndMaterialID        string   `json:"end_material_id,omitempty"`
 }
 
 type requestPayload struct {
@@ -155,12 +158,48 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if err := common.UnmarshalBodyReusable(c, &options); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
+	if err := resolveMaterialOptions(c, &options); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_material", http.StatusBadRequest)
+	}
 
 	payload, err := normalizeRequest(req, options)
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
 	c.Set(requestContextKey, payload)
+	return nil
+}
+
+func resolveMaterialOptions(c *gin.Context, options *inputOptions) error {
+	userID := c.GetInt("id")
+	objectKeys := make([]string, 0, len(options.ReferenceMaterialIDs)+2)
+
+	referenceURLs, keys, err := service.ResolveMaterialIDs(c.Request.Context(), userID, options.ReferenceMaterialIDs)
+	if err != nil {
+		return fmt.Errorf("resolve reference materials: %w", err)
+	}
+	options.ReferenceImages = append(options.ReferenceImages, referenceURLs...)
+	objectKeys = append(objectKeys, keys...)
+
+	if materialID := strings.TrimSpace(options.StartMaterialID); materialID != "" {
+		urls, resolvedKeys, resolveErr := service.ResolveMaterialIDs(c.Request.Context(), userID, []string{materialID})
+		if resolveErr != nil {
+			return fmt.Errorf("resolve start frame material: %w", resolveErr)
+		}
+		options.StartImageURL = urls[0]
+		objectKeys = append(objectKeys, resolvedKeys...)
+	}
+	if materialID := strings.TrimSpace(options.EndMaterialID); materialID != "" {
+		urls, resolvedKeys, resolveErr := service.ResolveMaterialIDs(c.Request.Context(), userID, []string{materialID})
+		if resolveErr != nil {
+			return fmt.Errorf("resolve end frame material: %w", resolveErr)
+		}
+		options.EndImageURL = urls[0]
+		objectKeys = append(objectKeys, resolvedKeys...)
+	}
+	if len(objectKeys) > 0 {
+		c.Set(service.MaterialObjectKeysContextKey, objectKeys)
+	}
 	return nil
 }
 

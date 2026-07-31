@@ -63,16 +63,19 @@ type mcpToolResult struct {
 }
 
 type mcpCreateVideoArgs struct {
-	Model           string   `json:"model,omitempty"`
-	Prompt          string   `json:"prompt"`
-	Duration        int      `json:"duration,omitempty"`
-	Resolution      string   `json:"resolution,omitempty"`
-	AspectRatio     string   `json:"aspect_ratio,omitempty"`
-	Mode            string   `json:"mode,omitempty"`
-	Audio           *bool    `json:"audio,omitempty"`
-	ReferenceImages []string `json:"reference_images,omitempty"`
-	StartImageURL   string   `json:"start_image_url,omitempty"`
-	EndImageURL     string   `json:"end_image_url,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	Prompt               string   `json:"prompt"`
+	Duration             int      `json:"duration,omitempty"`
+	Resolution           string   `json:"resolution,omitempty"`
+	AspectRatio          string   `json:"aspect_ratio,omitempty"`
+	Mode                 string   `json:"mode,omitempty"`
+	Audio                *bool    `json:"audio,omitempty"`
+	ReferenceImages      []string `json:"reference_images,omitempty"`
+	ReferenceMaterialIDs []string `json:"reference_material_ids,omitempty"`
+	StartImageURL        string   `json:"start_image_url,omitempty"`
+	EndImageURL          string   `json:"end_image_url,omitempty"`
+	StartMaterialID      string   `json:"start_material_id,omitempty"`
+	EndMaterialID        string   `json:"end_material_id,omitempty"`
 }
 
 type mcpGetVideoArgs struct {
@@ -85,6 +88,12 @@ type mcpCreateImageArgs struct {
 	N       int    `json:"n,omitempty"`
 	Size    string `json:"size,omitempty"`
 	Quality string `json:"quality,omitempty"`
+}
+
+type mcpCreateMaterialUploadArgs struct {
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	SizeBytes   int64  `json:"size_bytes"`
 }
 
 func SetMCPInternalHandler(handler http.Handler) {
@@ -120,7 +129,7 @@ func MCP(c *gin.Context) {
 				"name":    mcpServerName,
 				"version": common.Version,
 			},
-			"instructions": "Generate images synchronously with create_image. Create asynchronous Seedance video tasks with create_video, then poll get_video until SUCCESS or FAILURE.",
+			"instructions": "Generate images synchronously with create_image. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass material_id to create_video. Poll get_video until SUCCESS or FAILURE.",
 		})
 	case "ping":
 		writeMCPResult(c, request.ID, map[string]any{})
@@ -151,6 +160,8 @@ func handleMCPToolCall(c *gin.Context, request mcpRequest) {
 	switch params.Name {
 	case "create_image":
 		result = callCreateImageTool(c, params.Arguments)
+	case "create_material_upload":
+		result = callCreateMaterialUploadTool(c, params.Arguments)
 	case "create_video":
 		result = callCreateVideoTool(c, params.Arguments)
 	case "get_video":
@@ -160,6 +171,29 @@ func handleMCPToolCall(c *gin.Context, request mcpRequest) {
 		return
 	}
 	writeMCPResult(c, request.ID, result)
+}
+
+func callCreateMaterialUploadTool(c *gin.Context, arguments map[string]any) mcpToolResult {
+	var args mcpCreateMaterialUploadArgs
+	if err := decodeMCPArguments(arguments, &args); err != nil {
+		return newMCPToolError("invalid create_material_upload arguments: " + err.Error())
+	}
+	args.FileName = strings.TrimSpace(args.FileName)
+	args.ContentType = strings.TrimSpace(args.ContentType)
+	if args.FileName == "" {
+		return newMCPToolError("file_name is required")
+	}
+	if args.ContentType == "" {
+		return newMCPToolError("content_type is required")
+	}
+	if args.SizeBytes <= 0 {
+		return newMCPToolError("size_bytes must be greater than zero")
+	}
+	return callInternalAPI(c, http.MethodPost, "/v1/materials/uploads", map[string]any{
+		"file_name":    args.FileName,
+		"content_type": args.ContentType,
+		"size_bytes":   args.SizeBytes,
+	})
 }
 
 func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult {
@@ -227,16 +261,19 @@ func callCreateVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	}
 
 	payload := map[string]any{
-		"model":            args.Model,
-		"prompt":           args.Prompt,
-		"duration":         args.Duration,
-		"resolution":       args.Resolution,
-		"aspect_ratio":     args.AspectRatio,
-		"mode":             args.Mode,
-		"audio":            audio,
-		"reference_images": args.ReferenceImages,
-		"start_image_url":  strings.TrimSpace(args.StartImageURL),
-		"end_image_url":    strings.TrimSpace(args.EndImageURL),
+		"model":                  args.Model,
+		"prompt":                 args.Prompt,
+		"duration":               args.Duration,
+		"resolution":             args.Resolution,
+		"aspect_ratio":           args.AspectRatio,
+		"mode":                   args.Mode,
+		"audio":                  audio,
+		"reference_images":       args.ReferenceImages,
+		"reference_material_ids": args.ReferenceMaterialIDs,
+		"start_image_url":        strings.TrimSpace(args.StartImageURL),
+		"end_image_url":          strings.TrimSpace(args.EndImageURL),
+		"start_material_id":      strings.TrimSpace(args.StartMaterialID),
+		"end_material_id":        strings.TrimSpace(args.EndMaterialID),
 	}
 	return callInternalAPI(c, http.MethodPost, "/v1/video/generations", payload)
 }
@@ -378,6 +415,24 @@ func mediaMCPTools() []mcpTool {
 			},
 		},
 		{
+			Name:        "create_material_upload",
+			Description: "Create a short-lived direct OSS upload for a local reference image. After this tool returns, upload the exact local file with HTTP PUT to upload_url using every returned header. Then pass material_id to create_video. The New API server does not proxy the file bytes.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"file_name":    stringSchema("Original local file name, including .jpg, .png, or .webp."),
+					"content_type": stringSchema("Exact MIME type: image/jpeg, image/png, or image/webp."),
+					"size_bytes": map[string]any{
+						"type":        "integer",
+						"description": "Exact local file size in bytes. Defaults are limited to 10 MiB.",
+						"minimum":     1,
+					},
+				},
+				"required":             []string{"file_name", "content_type", "size_bytes"},
+				"additionalProperties": false,
+			},
+		},
+		{
 			Name:        "create_video",
 			Description: "Create an asynchronous Seedance video generation task. The result returns a task_id; use get_video to poll it.",
 			InputSchema: map[string]any{
@@ -411,7 +466,7 @@ func mediaMCPTools() []mcpTool {
 					},
 					"mode": map[string]any{
 						"type":        "string",
-						"description": "Generation mode. start_end_frame requires both start_image_url and end_image_url.",
+						"description": "Generation mode. start_end_frame requires both start and end frames, supplied by URL or material ID.",
 						"enum":        []string{"text_with_reference", "start_end_frame"},
 					},
 					"audio": map[string]any{
@@ -423,8 +478,15 @@ func mediaMCPTools() []mcpTool {
 						"description": "Public HTTP/HTTPS reference asset URLs. Prefixes reference:, start:, and end: are supported.",
 						"items":       stringSchema("Public reference asset URL."),
 					},
-					"start_image_url": stringSchema("Public URL for the start frame image."),
-					"end_image_url":   stringSchema("Public URL for the end frame image."),
+					"reference_material_ids": map[string]any{
+						"type":        "array",
+						"description": "Temporary material IDs returned by create_material_upload for reference images.",
+						"items":       stringSchema("Temporary material ID."),
+					},
+					"start_image_url":   stringSchema("Public URL for the start frame image."),
+					"end_image_url":     stringSchema("Public URL for the end frame image."),
+					"start_material_id": stringSchema("Temporary material ID for the start frame."),
+					"end_material_id":   stringSchema("Temporary material ID for the end frame."),
 				},
 				"required":             []string{"prompt"},
 				"additionalProperties": false,
