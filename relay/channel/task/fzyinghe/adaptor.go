@@ -685,6 +685,9 @@ func normalizeRequest(req relaycommon.TaskSubmitReq, options inputOptions) (requ
 
 	references := append([]string{}, req.Images...)
 	references = append(references, options.ReferenceImages...)
+	if isKlingModel(modelName) && strings.TrimSpace(options.Image) != "" {
+		references = removeUnprefixedReference(references, options.Image)
+	}
 	if strings.TrimSpace(options.Image) != "" && strings.TrimSpace(options.StartImageURL) == "" {
 		options.StartImageURL = strings.TrimSpace(options.Image)
 	}
@@ -709,6 +712,9 @@ func normalizeRequest(req relaycommon.TaskSubmitReq, options inputOptions) (requ
 	}
 	if err := validateKlingInputLists(options.ImageList, options.VideoList); err != nil {
 		return requestPayload{}, err
+	}
+	if isKlingV3Model(modelName) && len(options.VideoList) > 0 {
+		return requestPayload{}, fmt.Errorf("kling-v3 accepts image inputs only; use kling-v3-omni for reference videos")
 	}
 	for _, image := range options.ImageList {
 		switch strings.ToLower(strings.TrimSpace(image.Type)) {
@@ -784,6 +790,21 @@ func normalizeRequest(req relaycommon.TaskSubmitReq, options inputOptions) (requ
 		CameraControl:   options.CameraControl,
 		CfgScale:        options.CfgScale,
 	}, nil
+}
+
+func removeUnprefixedReference(references []string, target string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return references
+	}
+	filtered := make([]string, 0, len(references))
+	for _, reference := range references {
+		if strings.TrimSpace(reference) == target {
+			continue
+		}
+		filtered = append(filtered, reference)
+	}
+	return filtered
 }
 
 func validateKlingInputLists(images []klingImageInput, videos []klingVideoInput) error {

@@ -104,6 +104,21 @@ func TestBuildKlingV3RequestUsesOfficialFieldNames(t *testing.T) {
 	assert.JSONEq(t, `{"model_name":"kling-v3","prompt":"A girl smiles","image":"https://cdn.example.com/start.png","duration":5,"mode":"std","sound":"on"}`, string(encoded))
 }
 
+func TestNormalizeKlingOfficialImageDoesNotBecomeBothFrames(t *testing.T) {
+	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
+		Model:  "kling-v3",
+		Prompt: "Animate this image",
+		Image:  "https://cdn.example.com/start.png",
+	}, inputOptions{Image: "https://cdn.example.com/start.png"})
+	require.NoError(t, err)
+
+	body, err := buildKlingRequest(payload)
+	require.NoError(t, err)
+	encoded, err := common.Marshal(body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model_name":"kling-v3","prompt":"Animate this image","image":"https://cdn.example.com/start.png","duration":5,"mode":"std","sound":"off"}`, string(encoded))
+}
+
 func TestBuildKlingV3OmniMapsReferenceVideoAndTurnsIntoOfficialLists(t *testing.T) {
 	body, err := buildKlingRequest(requestPayload{
 		Model:           "kling-v3-omni",
