@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { api } from '@/lib/api'
 
+import { writeGenerationRecord } from '../generation-storage'
 import type {
   MaterialUploadResponse,
   GenerationModelsResponse,
@@ -86,6 +87,20 @@ export async function createVideo(
     { skipErrorHandler: true }
   )
   return response.data
+}
+
+/**
+ * Persist the asynchronous task id outside the route component. This keeps
+ * video polling recoverable when the user changes sections while the request
+ * is being submitted.
+ */
+export async function createVideoTracked(
+  request: VideoGenerationRequest
+): Promise<VideoCreateResponse> {
+  const response = await createVideo(request)
+  const taskId = response.task_id || response.id
+  if (taskId) writeGenerationRecord('video-current-task-id', taskId)
+  return response
 }
 
 export async function getVideoTask(taskId: string): Promise<VideoTaskResponse> {

@@ -107,6 +107,39 @@ func TestGetUserGenerationModelsUsesChannelNamesAndMappedVideoTiers(t *testing.T
 	}, response.Data)
 }
 
+func TestGetUserGenerationModelsReportsKlingCapabilities(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{
+		Id:       1,
+		Username: "kling-user",
+		Password: "password",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}).Error)
+
+	insertGenerationModelBinding(
+		t,
+		1,
+		constant.ChannelTypeFZYingheVideo,
+		"kling-v3",
+		"",
+	)
+	insertGenerationModelBinding(
+		t,
+		2,
+		constant.ChannelTypeFZYingheVideo,
+		"kling-v3-omni",
+		"",
+	)
+
+	response := requestGenerationModels(t, "video")
+	require.Equal(t, []generationModel{
+		{ID: "kling-v3", Tier: "standard", Kind: "kling-v3"},
+		{ID: "kling-v3-omni", Tier: "standard", Kind: "kling-v3-omni"},
+	}, response.Data)
+}
+
 func TestGetUserGenerationModelsFiltersMappedImageModels(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&model.User{

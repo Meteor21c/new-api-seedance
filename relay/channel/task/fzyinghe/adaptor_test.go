@@ -328,6 +328,26 @@ func TestDoResponseReadsStandardEnvelope(t *testing.T) {
 	assert.NotContains(t, recorder.Body.String(), "upstream-123")
 }
 
+func TestDoResponseAcceptsSeedanceStringTimestampAndSuccessCode(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(
+			`{"code":200,"msg":"操作成功","data":{"taskId":"job-seedance-1","status":"queued","createdAt":"1785516592"}}`,
+		)),
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "cheap-seedance-2.0-mini",
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+	}
+
+	taskID, _, taskErr := (&TaskAdaptor{}).DoResponse(ginContext, response, info)
+
+	require.Nil(t, taskErr)
+	assert.Equal(t, "job-seedance-1", taskID)
+}
+
 func TestDoResponseReadsKlingEnvelope(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ginContext, _ := gin.CreateTestContext(recorder)

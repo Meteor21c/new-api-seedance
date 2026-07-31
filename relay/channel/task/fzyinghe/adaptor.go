@@ -209,6 +209,37 @@ type upstreamTaskResult struct {
 	Videos []upstreamVideo `json:"videos,omitempty"`
 }
 
+// flexibleInt64 accepts the timestamp representation used by the different
+// FZYinghe task endpoints.  The Seedance endpoint currently returns
+// createdAt as a JSON string, while other responses may return a JSON number.
+// A malformed timestamp should still fail the response rather than silently
+// changing the task status or task id.
+type flexibleInt64 int64
+
+func (value *flexibleInt64) UnmarshalJSON(data []byte) error {
+	var number int64
+	if err := common.Unmarshal(data, &number); err == nil {
+		*value = flexibleInt64(number)
+		return nil
+	}
+
+	var raw string
+	if err := common.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		*value = 0
+		return nil
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid integer timestamp %q: %w", raw, err)
+	}
+	*value = flexibleInt64(parsed)
+	return nil
+}
+
 type upstreamTask struct {
 	TaskID        string             `json:"taskId,omitempty"`
 	TaskIDSnake   string             `json:"task_id,omitempty"`
@@ -217,7 +248,8 @@ type upstreamTask struct {
 	TaskStatus    string             `json:"task_status,omitempty"`
 	TaskStatusMsg string             `json:"task_status_msg,omitempty"`
 	TaskResult    upstreamTaskResult `json:"task_result,omitempty"`
-	CreatedAt     int64              `json:"createdAt,omitempty"`
+	CreatedAt      flexibleInt64      `json:"createdAt,omitempty"`
+	CreatedAtSnake flexibleInt64      `json:"created_at,omitempty"`
 	ResultURL     string             `json:"resultUrl,omitempty"`
 	URL           string             `json:"url,omitempty"`
 	ThumbnailURL  string             `json:"thumbnailUrl,omitempty"`
@@ -413,7 +445,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	_ = resp.Body.Close()
 
 	var envelope upstreamEnvelope
-	if err := common.Unmarshal(responseBody, &envelope); err == nil && envelope.Code != 0 {
+	if err := common.Unmarshal(responseBody, &envelope); err == nil && !isSuccessfulEnvelopeCode(envelope.Code) {
 		message := firstNonEmpty(envelope.Message, envelope.Msg, "upstream task creation failed")
 		taskErr = service.TaskErrorWrapperLocal(errors.New(message), "task_failed", http.StatusBadRequest)
 		return
@@ -499,7 +531,7 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 	video.TaskID = originTask.TaskID
 	video.Status = originTask.Status.ToVideoStatus()
 	video.SetProgressStr(originTask.Progress)
-	video.CreatedAt = originTask.CreatedAt
+	video.CreatedAt = int64(originTask.CreatedAt)
 	video.CompletedAt = originTask.UpdatedAt
 	video.Model = originTask.Properties.OriginModelName
 	if resultURL := originTask.GetResultURL(); resultURL != "" {
@@ -1144,7 +1176,17 @@ func normalizeUpstreamTask(task upstreamTask) upstreamTask {
 	if task.ResultURL == "" && len(task.TaskResult.Videos) > 0 {
 		task.ResultURL = task.TaskResult.Videos[0].URL
 	}
+	if task.CreatedAt == 0 {
+		task.CreatedAt = task.CreatedAtSnake
+	}
 	return task
+}
+
+func isSuccessfulEnvelopeCode(code int) bool {
+	// Seedance uses 200 for a successful task submission, while the Kling
+	// compatible responses use 0.  An omitted code also decodes to 0 and is
+	// accepted for backwards-compatible bare task responses.
+	return code == 0 || code == http.StatusOK
 }
 
 func normalizedTaskStatus(task upstreamTask) string {

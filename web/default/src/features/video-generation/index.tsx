@@ -63,7 +63,13 @@ import { Textarea } from '@/components/ui/textarea'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 
 import {
-  createVideo,
+  readGenerationHistory,
+  readGenerationRecord,
+  writeGenerationHistory,
+  writeGenerationRecord,
+} from '../generation-storage'
+import {
+  createVideoTracked,
   getVideoModels,
   getVideoTask,
   getVideoTasks,
@@ -88,8 +94,31 @@ function inferredModelKind(modelName: string): VideoModelKind {
   return 'unknown'
 }
 
+function modelKindForSelection(
+  modelName: string,
+  metadataKind?: VideoModelKind
+): VideoModelKind {
+  // Prefer the exact channel model name when it identifies a built-in model.
+  // This keeps the UI correct even when an old cached model-list response has
+  // no `kind` field. Custom channel aliases still use the server-provided
+  // metadata.
+  const inferred = inferredModelKind(modelName)
+  return inferred === 'unknown' ? (metadataKind ?? 'unknown') : inferred
+}
+
+function inferredModelTier(modelName: string): VideoTier {
+  const normalized = modelName.trim().toLowerCase()
+  if (normalized.endsWith('-mini')) return 'mini'
+  if (normalized.endsWith('-fast')) return 'fast'
+  return 'standard'
+}
+
 function minimumDurationForKind(kind: VideoModelKind): number {
   return kind === 'kling-v3' || kind === 'kling-v3-omni' ? 3 : 4
+}
+
+function isKlingKind(kind: VideoModelKind): boolean {
+  return kind === 'kling-v3' || kind === 'kling-v3-omni'
 }
 
 const KLING_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const
@@ -124,12 +153,21 @@ const videoFormSchema = z
   })
   .superRefine((values, context) => {
     const kind = inferredModelKind(values.model)
+    const tier = inferredModelTier(values.model)
     const minimum = minimumDurationForKind(kind)
+    const allowedResolutions = resolutionsForModel(kind, tier)
     if (values.duration < minimum) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['duration'],
         message: `Duration must be at least ${minimum} seconds`,
+      })
+    }
+    if (!allowedResolutions.includes(values.resolution)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['resolution'],
+        message: `Resolution ${values.resolution} is not supported by the selected model`,
       })
     }
     if (
@@ -248,6 +286,36 @@ function statusVariant(status: string) {
 function taskTimestamp(task: VideoTask): string {
   const timestamp = task.submit_time || task.created_at
   return new Date(timestamp * 1000).toLocaleString()
+}
+
+function taskSortTimestamp(task: VideoTask): number {
+  return task.updated_at || task.created_at || task.submit_time || 0
+}
+
+function taskHistoryKey(task: VideoTask): string {
+  return task.task_id || String(task.id)
+}
+
+function mergeVideoTasks(...lists: VideoTask[][]): VideoTask[] {
+  const tasks = new Map<string, VideoTask>()
+  for (const list of lists) {
+    for (const task of list) {
+      const key = taskHistoryKey(task)
+      if (!key) continue
+      const existing = tasks.get(key)
+      if (!existing) {
+        tasks.set(key, task)
+        continue
+      }
+      const newer =
+        taskSortTimestamp(task) >= taskSortTimestamp(existing) ? task : existing
+      const older = newer === task ? existing : task
+      tasks.set(key, { ...older, ...newer })
+    }
+  }
+  return [...tasks.values()]
+    .sort((left, right) => taskSortTimestamp(right) - taskSortTimestamp(left))
+    .slice(0, 12)
 }
 
 function splitReferenceUrls(raw: string): string[] {
@@ -401,7 +469,19 @@ function VideoResult({ task }: { task: VideoTask }) {
 export function VideoGeneration() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const [currentTaskId, setCurrentTaskId] = useState('')
+  const [restoredTask, setRestoredTask] = useState<VideoTask | null>(
+    () => readGenerationRecord<VideoTask>('video-current-task')?.value ?? null
+  )
+  const [currentTaskId, setCurrentTaskId] = useState(() => {
+    return (
+      readGenerationRecord<string>('video-current-task-id')?.value ??
+      readGenerationRecord<VideoTask>('video-current-task')?.value.task_id ??
+      ''
+    )
+  })
+  const [localHistory, setLocalHistory] = useState<VideoTask[]>(() =>
+    readGenerationHistory<VideoTask>('video-history')
+  )
   const [referenceFiles, setReferenceFiles] = useState<File[]>([])
   const [startFrameFile, setStartFrameFile] = useState<File | null>(null)
   const [endFrameFile, setEndFrameFile] = useState<File | null>(null)
@@ -438,11 +518,19 @@ export function VideoGeneration() {
     retry: false,
   })
   const selectedModel = modelsQuery.data?.find((item) => item.id === model)
-  const selectedKind = selectedModel?.kind ?? inferredModelKind(model)
-  const selectedTier = selectedModel?.tier ?? 'standard'
-  const allowedResolutions = resolutionsForModel(selectedKind, selectedTier)
-  const allowedAspectRatios = aspectRatiosForKind(selectedKind)
+  const selectedKind = modelKindForSelection(model, selectedModel?.kind)
+  const selectedTier = selectedModel?.tier ?? inferredModelTier(model)
+  const allowedResolutions = useMemo(
+    () => resolutionsForModel(selectedKind, selectedTier),
+    [selectedKind, selectedTier]
+  )
+  const allowedAspectRatios = useMemo(
+    () => aspectRatiosForKind(selectedKind),
+    [selectedKind]
+  )
   const minimumDuration = minimumDurationForKind(selectedKind)
+  const klingOmniReferenceVideo =
+    selectedKind === 'kling-v3-omni' && hasReferenceVideo(referenceUrls)
   let modelDescription = t(
     'No available video models are configured in Channels'
   )
@@ -475,13 +563,72 @@ export function VideoGeneration() {
     }
   }, [allowedAspectRatios, form])
 
+  useEffect(() => {
+    if (klingOmniReferenceVideo && form.getValues('audio')) {
+      form.setValue('audio', false, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+  }, [form, klingOmniReferenceVideo])
+
+  const applyModelDefaults = (nextModel: string) => {
+    const nextSelectedModel = modelsQuery.data?.find(
+      (item) => item.id === nextModel
+    )
+    const nextKind = modelKindForSelection(nextModel, nextSelectedModel?.kind)
+    const nextTier = nextSelectedModel?.tier ?? inferredModelTier(nextModel)
+    const nextResolutions = resolutionsForModel(nextKind, nextTier)
+    const nextAspectRatios = aspectRatiosForKind(nextKind)
+    const currentResolution = form.getValues('resolution')
+    const currentAspectRatio = form.getValues('aspectRatio')
+    const currentDuration = form.getValues('duration')
+
+    // Normalize all model-dependent values in the same event as the model
+    // change. This prevents a stale 480p value from being submitted during
+    // the render/effect gap when switching from Seedance to Kling.
+    if (!nextResolutions.includes(currentResolution)) {
+      form.setValue('resolution', nextResolutions[0] ?? '720p', {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+    if (!nextAspectRatios.includes(currentAspectRatio)) {
+      form.setValue('aspectRatio', nextAspectRatios[0] ?? '16:9', {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+    if (isKlingKind(nextKind) && form.getValues('audio')) {
+      // Kling documents silent output as its default. Users can turn audio
+      // back on after the model switch when the selected variant supports it.
+      form.setValue('audio', false, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+    const nextMinimumDuration = minimumDurationForKind(nextKind)
+    if (
+      Number.isFinite(currentDuration) &&
+      currentDuration < nextMinimumDuration
+    ) {
+      form.setValue('duration', nextMinimumDuration, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+  }
+
   const estimatedPrice = useMemo(() => {
-    const pricePerSecond =
-      selectedKind === 'kling-v3' || selectedKind === 'kling-v3-omni'
-        ? estimateKlingPrice(selectedKind, resolution, audio, referenceUrls)
-        : (PRICE_PER_SECOND[selectedTier][resolution] ?? 0)
+    const pricePerSecond = isKlingKind(selectedKind)
+      ? estimateKlingPrice(selectedKind, resolution, audio, referenceUrls)
+      : (PRICE_PER_SECOND[selectedTier][resolution] ?? 0)
     return pricePerSecond * (Number.isFinite(duration) ? duration : 0)
   }, [audio, duration, referenceUrls, resolution, selectedKind, selectedTier])
+
+  const estimatedPricePerSecond = isKlingKind(selectedKind)
+    ? estimateKlingPrice(selectedKind, resolution, audio, referenceUrls)
+    : (PRICE_PER_SECOND[selectedTier][resolution] ?? 0)
 
   const currentTaskQuery = useQuery({
     queryKey: ['video-task', currentTaskId],
@@ -493,25 +640,52 @@ export function VideoGeneration() {
     },
   })
 
+  useEffect(() => {
+    const task = currentTaskQuery.data?.data
+    if (!task) return
+    setRestoredTask(task)
+    setLocalHistory((previous) => mergeVideoTasks(previous, [task]))
+    writeGenerationRecord('video-current-task', task)
+  }, [currentTaskQuery.data])
+
   const historyQuery = useQuery({
     queryKey: ['video-tasks'],
     queryFn: getVideoTasks,
     refetchInterval: 10000,
   })
 
+  useEffect(() => {
+    const serverHistory = historyQuery.data?.data?.items ?? []
+    if (serverHistory.length === 0) return
+    setLocalHistory((previous) => mergeVideoTasks(previous, serverHistory))
+  }, [historyQuery.data])
+
+  useEffect(() => {
+    writeGenerationHistory('video-history', localHistory)
+  }, [localHistory])
+
   const createMutation = useMutation({
-    mutationFn: createVideo,
+    mutationFn: createVideoTracked,
     onSuccess: (response) => {
       const taskId = response.task_id || response.id
       setCurrentTaskId(taskId)
+      setRestoredTask(null)
+      writeGenerationRecord('video-current-task-id', taskId)
       toast.success(t('Video task submitted'))
       void queryClient.invalidateQueries({ queryKey: ['video-tasks'] })
     },
   })
 
   const onSubmit = async (values: VideoFormValues) => {
-    const isKling =
-      selectedKind === 'kling-v3' || selectedKind === 'kling-v3-omni'
+    const isKling = isKlingKind(selectedKind)
+    if (!allowedResolutions.includes(values.resolution)) {
+      toast.error(
+        t('Resolution {{resolution}} is not supported by the selected model', {
+          resolution: values.resolution,
+        })
+      )
+      return
+    }
     const requiresBothFrames = !isKling
     if (
       values.mode === 'start_end_frame' &&
@@ -571,6 +745,27 @@ export function VideoGeneration() {
     }
   }
 
+  useEffect(() => {
+    const task = currentTaskQuery.data?.data ?? restoredTask
+    const isGenerating =
+      createMutation.isPending ||
+      isUploading ||
+      Boolean(task && !TERMINAL_STATUSES.has(task.status))
+    if (!isGenerating) return
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [
+    createMutation.isPending,
+    currentTaskQuery.data,
+    isUploading,
+    restoredTask,
+  ])
+
   const copyMcpPrompt = () => {
     void copyToClipboard(
       buildMcpPrompt(
@@ -582,8 +777,11 @@ export function VideoGeneration() {
     )
   }
 
-  const currentTask = currentTaskQuery.data?.data
-  const history = historyQuery.data?.data?.items ?? []
+  const currentTask = currentTaskQuery.data?.data ?? restoredTask
+  const history = useMemo(
+    () => mergeVideoTasks(localHistory, historyQuery.data?.data?.items ?? []),
+    [historyQuery.data?.data?.items, localHistory]
+  )
 
   return (
     <Main className='space-y-6 overflow-x-hidden overflow-y-auto px-3 py-6 pb-12 sm:px-4'>
@@ -640,7 +838,11 @@ export function VideoGeneration() {
                                 (modelsQuery.data?.length ?? 0) === 0
                               }
                               value={field.value}
-                              onChange={field.onChange}
+                              onChange={(event) => {
+                                const nextModel = event.target.value
+                                field.onChange(nextModel)
+                                applyModelDefaults(nextModel)
+                              }}
                             >
                               {(modelsQuery.data ?? []).map((item) => (
                                 <NativeSelectOption
@@ -708,6 +910,13 @@ export function VideoGeneration() {
                               ))}
                             </NativeSelect>
                           </FormControl>
+                          {isKlingKind(selectedKind) && (
+                            <FormDescription>
+                              {t(
+                                'Kling maps 720p, 1080p, and 4K to std, pro, and 4k automatically'
+                              )}
+                            </FormDescription>
+                          )}
                           <FormMessage />
                         </FormItem>
                       )}
@@ -786,6 +995,13 @@ export function VideoGeneration() {
                             </NativeSelectOption>
                           </NativeSelect>
                         </FormControl>
+                        {isKlingKind(selectedKind) && (
+                          <FormDescription>
+                            {t(
+                              'Kling uses the selected resolution as its generation mode'
+                            )}
+                          </FormDescription>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -814,6 +1030,7 @@ export function VideoGeneration() {
                           <FormControl>
                             <Switch
                               checked={field.value}
+                              disabled={klingOmniReferenceVideo}
                               onCheckedChange={field.onChange}
                             />
                           </FormControl>
@@ -972,10 +1189,7 @@ export function VideoGeneration() {
                       ¥{estimatedPrice.toFixed(4)}
                     </p>
                     <p className='text-muted-foreground text-xs'>
-                      ¥
-                      {(
-                        PRICE_PER_SECOND[selectedTier][resolution] ?? 0
-                      ).toFixed(4)}
+                      ¥{estimatedPricePerSecond.toFixed(4)}
                       {' / '}
                       {t('second')}
                     </p>
@@ -1024,6 +1238,29 @@ export function VideoGeneration() {
             </CardContent>
           </Card>
 
+          {currentTask && !TERMINAL_STATUSES.has(currentTask.status) && (
+            <Alert>
+              <LoaderCircle className='animate-spin' />
+              <AlertTitle>{t('Video task is still processing')}</AlertTitle>
+              <AlertDescription>
+                {t(
+                  'You can switch sections or refresh; this task is saved locally and will resume polling when you return'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {restoredTask && !currentTaskQuery.data?.data && (
+            <Alert>
+              <Film />
+              <AlertDescription>
+                {t(
+                  'This video task was restored from this browser; signed result links expire after 24 hours'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+
           <Alert>
             <Clock3 />
             <AlertTitle>{t('Video links expire after 24 hours')}</AlertTitle>
@@ -1038,7 +1275,9 @@ export function VideoGeneration() {
         <CardHeader>
           <CardTitle>{t('Recent video tasks')}</CardTitle>
           <CardDescription>
-            {t('Your latest video generation requests')}
+            {t(
+              'Your latest video generation requests are kept in this browser for up to 24 hours'
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -1073,6 +1312,16 @@ export function VideoGeneration() {
                         <Progress value={progressValue(task.progress)} />
                       </div>
                     )}
+                    <Button
+                      size='sm'
+                      variant='ghost'
+                      onClick={() => {
+                        setRestoredTask(task)
+                        setCurrentTaskId(task.task_id)
+                      }}
+                    >
+                      {t('View')}
+                    </Button>
                     {task.result_url && (
                       <Button
                         size='sm'

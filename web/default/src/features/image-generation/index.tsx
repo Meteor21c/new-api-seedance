@@ -19,7 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { ExternalLink, ImageIcon, LoaderCircle, Sparkles } from 'lucide-react'
+import {
+  Clock3,
+  ExternalLink,
+  ImageIcon,
+  LoaderCircle,
+  Sparkles,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -50,10 +56,19 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 
 import {
-  createImage,
+  GENERATION_PENDING_TTL_MS,
+  readGenerationHistory,
+  readGenerationRecord,
+  removeGenerationRecord,
+} from '../generation-storage'
+import {
+  createImageTracked,
   getImageModels,
   type GeneratedImage,
+  type ImageHistoryEntry,
   type ImageGenerationRequest,
+  type TrackedImageResult,
+  type TrackedImageRequest,
 } from './api'
 
 const imageFormSchema = z.object({
@@ -74,7 +89,26 @@ function getImageSource(image: GeneratedImage): string {
 
 export function ImageGeneration() {
   const { t } = useTranslation()
-  const [images, setImages] = useState<GeneratedImage[]>([])
+  const [images, setImages] = useState<GeneratedImage[]>(() => {
+    return (
+      readGenerationRecord<TrackedImageResult>('image-latest')?.value.images ??
+      []
+    )
+  })
+  const [imagesRestored, setImagesRestored] = useState(() =>
+    Boolean(readGenerationRecord<TrackedImageResult>('image-latest'))
+  )
+  const [imageHistory, setImageHistory] = useState<ImageHistoryEntry[]>(() =>
+    readGenerationHistory<ImageHistoryEntry>('image-history')
+  )
+  const [pendingAfterReload, setPendingAfterReload] = useState(() => {
+    const pending = readGenerationRecord<TrackedImageRequest>(
+      'image-pending',
+      GENERATION_PENDING_TTL_MS
+    )
+    const result = readGenerationRecord<TrackedImageResult>('image-latest')
+    return Boolean(pending && result?.value.id !== pending.value.id)
+  })
 
   const form = useForm<ImageFormValues>({
     resolver: zodResolver(imageFormSchema),
@@ -113,12 +147,62 @@ export function ImageGeneration() {
   }, [form, modelsQuery.data])
 
   const createMutation = useMutation({
-    mutationFn: createImage,
+    mutationFn: createImageTracked,
     onSuccess: (response) => {
       setImages(response.data ?? [])
+      setImageHistory(readGenerationHistory<ImageHistoryEntry>('image-history'))
+      setImagesRestored(false)
+      setPendingAfterReload(false)
+      removeGenerationRecord('image-pending')
       toast.success(t('Image generated successfully'))
     },
+    onError: () => {
+      setPendingAfterReload(false)
+      removeGenerationRecord('image-pending')
+    },
   })
+
+  // If the route was changed while the synchronous request was still running,
+  // createImageTracked writes the result after it resolves. Pick that result
+  // up when the user returns to this page.
+  useEffect(() => {
+    if (!pendingAfterReload) return
+
+    const refreshStoredResult = () => {
+      const result = readGenerationRecord<TrackedImageResult>('image-latest')
+      const pending = readGenerationRecord<TrackedImageRequest>(
+        'image-pending',
+        GENERATION_PENDING_TTL_MS
+      )
+
+      if (result && (!pending || result.value.id === pending.value.id)) {
+        setImages(result.value.images)
+        setImagesRestored(true)
+        setImageHistory(
+          readGenerationHistory<ImageHistoryEntry>('image-history')
+        )
+      }
+      if (!pending || (result && result.value.id === pending.value.id)) {
+        setPendingAfterReload(false)
+      }
+    }
+
+    refreshStoredResult()
+    const interval = window.setInterval(refreshStoredResult, 1000)
+    return () => window.clearInterval(interval)
+  }, [pendingAfterReload])
+
+  useEffect(() => {
+    const isGenerating = createMutation.isPending || pendingAfterReload
+    if (!isGenerating) return
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [createMutation.isPending, pendingAfterReload])
 
   const onSubmit = (values: ImageFormValues) => {
     const request: ImageGenerationRequest = {
@@ -129,6 +213,8 @@ export function ImageGeneration() {
     }
     if (values.size !== 'auto') request.size = values.size
     if (values.quality !== 'auto') request.quality = values.quality
+    setPendingAfterReload(true)
+    setImagesRestored(false)
     createMutation.mutate(request)
   }
 
@@ -304,6 +390,33 @@ export function ImageGeneration() {
                   </AlertDescription>
                 </Alert>
 
+                {(createMutation.isPending || pendingAfterReload) && (
+                  <Alert>
+                    <Clock3 />
+                    <AlertTitle>
+                      {t('Image generation is still in progress')}
+                    </AlertTitle>
+                    <AlertDescription>
+                      {t(
+                        'Switching sections is supported, but refreshing or closing the browser may prevent a synchronous image result from being recovered'
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {!createMutation.isPending &&
+                  !pendingAfterReload &&
+                  imagesRestored && (
+                    <Alert>
+                      <ImageIcon />
+                      <AlertDescription>
+                        {t(
+                          'This result was restored from this browser and will expire after 24 hours'
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
                 <Button
                   className='w-full'
                   type='submit'
@@ -382,6 +495,87 @@ export function ImageGeneration() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('Recent image generations')}</CardTitle>
+          <CardDescription>
+            {t(
+              'Recent image results are kept in this browser for up to 24 hours'
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {imageHistory.length === 0 ? (
+            <p className='text-muted-foreground py-8 text-center text-sm'>
+              {t('No image generations yet')}
+            </p>
+          ) : (
+            <div className='grid gap-4 md:grid-cols-2 xl:grid-cols-3'>
+              {imageHistory.map((entry) => {
+                const imagesWithUrls = entry.images.filter(
+                  (image) => image.url && !image.url.startsWith('data:')
+                )
+                return (
+                  <div
+                    key={entry.id}
+                    className='space-y-3 rounded-lg border p-3'
+                  >
+                    <div className='flex items-center justify-between gap-2'>
+                      <span className='truncate text-sm font-medium'>
+                        {entry.model}
+                      </span>
+                      <span className='text-muted-foreground shrink-0 text-xs'>
+                        {new Date(entry.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className='text-muted-foreground line-clamp-3 text-sm'>
+                      {entry.prompt}
+                    </p>
+                    {imagesWithUrls.length > 0 ? (
+                      <div className='grid gap-2 sm:grid-cols-2'>
+                        {imagesWithUrls.map((image, index) => (
+                          <div
+                            key={image.url ?? `${entry.id}-${index}`}
+                            className='space-y-2'
+                          >
+                            <img
+                              className='bg-muted aspect-square w-full rounded-md object-contain'
+                              src={image.url}
+                              alt={image.revised_prompt || t('Generated image')}
+                            />
+                            <Button
+                              className='w-full'
+                              size='sm'
+                              variant='outline'
+                              render={
+                                <a
+                                  href={image.url}
+                                  target='_blank'
+                                  rel='noreferrer'
+                                />
+                              }
+                            >
+                              <ExternalLink />
+                              {t('Open image')}
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className='text-muted-foreground bg-muted rounded-md p-3 text-xs'>
+                        {t(
+                          'The upstream did not return a reusable image URL, so this result cannot be restored after refresh'
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </Main>
   )
 }
