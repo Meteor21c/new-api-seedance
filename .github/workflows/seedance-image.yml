@@ -75,6 +75,7 @@ jobs:
             router/video-router.go)"
           echo "Unformatted Go files:"
           printf '%s\\n' "$unformatted"
+          gofmt -d relay/channel/task/fzyinghe/adaptor.go
           test -z "$unformatted"
           go test ./relay/channel/task/fzyinghe
           go test ./controller ./middleware ./relay ./router
