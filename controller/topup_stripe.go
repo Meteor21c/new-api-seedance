@@ -423,6 +423,7 @@ func getStripePayMoney(amount float64, group string) float64 {
 }
 
 func getStripeChargeAmount(amount float64, group string) float64 {
+	discount := operation_setting.GetAmountDiscount(amount)
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		amount = amount / common.QuotaPerUnit
 	}
@@ -430,7 +431,6 @@ func getStripeChargeAmount(amount float64, group string) float64 {
 	if topupGroupRatio == 0 {
 		topupGroupRatio = 1
 	}
-	discount := operation_setting.GetAmountDiscount(amount)
 	return amount * topupGroupRatio * discount
 }
 

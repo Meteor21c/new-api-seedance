@@ -148,6 +148,10 @@ func GetEpayClient() *epay.Client {
 
 func getPayMoney(amount int64, group string) float64 {
 	dAmount := decimal.NewFromInt(amount)
+	// Match the tier against the amount submitted by the frontend. In token
+	// display mode this keeps thresholds in the same unit as the configured
+	// amount options before converting to the billing unit below.
+	discount := operation_setting.GetAmountDiscount(float64(amount))
 	// 充值金额以“展示类型”为准：
 	// - USD/CNY: 前端传 amount 为金额单位；TOKENS: 前端传 tokens，需要换成 USD 金额
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
@@ -162,9 +166,6 @@ func getPayMoney(amount int64, group string) float64 {
 
 	dTopupGroupRatio := decimal.NewFromFloat(topupGroupRatio)
 	dPrice := decimal.NewFromFloat(operation_setting.Price)
-	// Apply the tier matching the displayed recharge amount. The configured
-	// keys are minimum amounts, so the highest matching key is selected.
-	discount := operation_setting.GetAmountDiscount(dAmount.InexactFloat64())
 	dDiscount := decimal.NewFromFloat(discount)
 
 	payMoney := dAmount.Mul(dPrice).Mul(dTopupGroupRatio).Mul(dDiscount)
