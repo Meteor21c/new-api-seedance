@@ -176,9 +176,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.PublicTaskID = model.GenerateTaskID()
 	}
 
-	// 4. 价格计算：基础模型价格
-	info.OriginModelName = modelName
+	// 4. 价格计算：基础模型价格。盈合渠道允许展示自定义别名；
+	// 当别名没有单独计费配置时，自动继承映射后模型的默认价格。
+	pricingModelName := modelName
+	if info.ChannelType == constant.ChannelTypeFZYingheVideo &&
+		info.IsModelMapped &&
+		!helper.HasModelBillingConfig(modelName) &&
+		helper.HasModelBillingConfig(info.UpstreamModelName) {
+		pricingModelName = info.UpstreamModelName
+	}
+	info.OriginModelName = pricingModelName
 	priceData, err := helper.ModelPriceHelperPerCall(c, info)
+	info.OriginModelName = modelName
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 	}

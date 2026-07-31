@@ -21,10 +21,13 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { VideoGeneration } from '@/features/video-generation'
 import { isSidebarModuleEnabled } from '@/lib/nav-modules'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/video/')({
   beforeLoad: () => {
-    if (!isSidebarModuleEnabled('chat', 'video')) {
+    const role = useAuthStore.getState().auth.user?.role ?? ROLE.GUEST
+    if (role < ROLE.ADMIN && !isSidebarModuleEnabled('chat', 'video')) {
       throw redirect({ to: '/dashboard' })
     }
   },

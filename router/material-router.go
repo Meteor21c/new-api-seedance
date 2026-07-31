@@ -11,7 +11,10 @@ func SetMaterialRouter(router *gin.Engine) {
 	playgroundRouter := router.Group("/pg/materials")
 	playgroundRouter.Use(middleware.RouteTag("relay"))
 	playgroundRouter.Use(middleware.SystemPerformanceCheck())
-	playgroundRouter.Use(middleware.UserAuth())
+	playgroundRouter.Use(
+		middleware.UserAuth(),
+		middleware.SidebarModuleAuth("chat", "video"),
+	)
 	{
 		playgroundRouter.POST("/uploads", controller.CreateMaterialUpload)
 	}

@@ -16,6 +16,14 @@ var (
 		"prefix:imagen-",
 		"flux-",
 		"flux.1-",
+		"seedream",
+		"recraft",
+		"ideogram",
+		"stable-diffusion",
+		"sdxl",
+		"nano-banana",
+		"qwen-image",
+		"hunyuan-image",
 	}
 	OpenAITextModels = []string{
 		"gpt-",

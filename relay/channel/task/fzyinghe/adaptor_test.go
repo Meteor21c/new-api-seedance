@@ -61,6 +61,24 @@ func TestNormalizeRequestValidatesModelResolutionMatrix(t *testing.T) {
 	assert.Contains(t, err.Error(), "not supported")
 }
 
+func TestMappedRequestModelResolvesChannelAliases(t *testing.T) {
+	mapped, err := mappedRequestModel(
+		"seedace-2.0-mini",
+		`{"seedace-2.0-mini":"cheap-seedance-2.0-mini"}`,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "cheap-seedance-2.0-mini", mapped)
+}
+
+func TestMappedRequestModelRejectsCycles(t *testing.T) {
+	_, err := mappedRequestModel(
+		"seedance-a",
+		`{"seedance-a":"seedance-b","seedance-b":"seedance-a"}`,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cycle")
+}
+
 func TestNormalizeRequestValidatesDurationAndPrompt(t *testing.T) {
 	_, err := normalizeRequest(relaycommon.TaskSubmitReq{
 		Model:    "cheap-seedance-2.0",

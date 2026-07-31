@@ -38,22 +38,43 @@ jobs:
           bun run build
           bun run typecheck
           bunx oxlint -c .oxlintrc.json \
+            src/features/image-generation \
             src/features/video-generation \
+            src/routes/_authenticated/image/index.tsx \
             src/routes/_authenticated/video/index.tsx \
+            src/hooks/use-sidebar-config.ts \
             src/hooks/use-sidebar-data.ts \
             src/features/channels/constants.ts \
             src/features/channels/lib/channel-utils.ts
           bunx oxfmt --check \
+            src/features/image-generation \
             src/features/video-generation \
+            src/routes/_authenticated/image/index.tsx \
             src/routes/_authenticated/video/index.tsx \
+            src/hooks/use-sidebar-config.ts \
             src/hooks/use-sidebar-data.ts \
             src/features/channels/constants.ts \
             src/features/channels/lib/channel-utils.ts
 
       - name: Test backend additions
         run: |
+          test -z "$(gofmt -l \
+            common/endpoint_type.go \
+            common/model.go \
+            controller/generation_models.go \
+            controller/generation_models_test.go \
+            middleware/sidebar_module.go \
+            middleware/sidebar_module_test.go \
+            model/ability.go \
+            relay/channel/task/fzyinghe/adaptor.go \
+            relay/channel/task/fzyinghe/adaptor_test.go \
+            relay/relay_task.go \
+            router/api-router.go \
+            router/material-router.go \
+            router/relay-router.go \
+            router/video-router.go)"
           go test ./relay/channel/task/fzyinghe
-          go test ./controller ./router
+          go test ./controller ./middleware ./relay ./router
 
   image:
     needs: verify

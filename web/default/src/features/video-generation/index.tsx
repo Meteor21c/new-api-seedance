@@ -59,19 +59,24 @@ import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
-import { createVideo, getVideoTask, getVideoTasks, uploadMaterial } from './api'
+import {
+  createVideo,
+  getVideoModels,
+  getVideoTask,
+  getVideoTasks,
+  uploadMaterial,
+} from './api'
 import {
   VIDEO_ASPECT_RATIOS,
-  VIDEO_MODELS,
   VIDEO_MODES,
   type VideoGenerationRequest,
-  type VideoModel,
   type VideoResolution,
   type VideoTask,
+  type VideoTier,
 } from './types'
 
 const videoFormSchema = z.object({
-  model: z.enum(VIDEO_MODELS),
+  model: z.string().trim().min(1, 'Model is required'),
   prompt: z
     .string()
     .trim()
@@ -94,20 +99,20 @@ const videoFormSchema = z.object({
 type VideoFormValues = z.infer<typeof videoFormSchema>
 
 const PRICE_PER_SECOND: Record<
-  VideoModel,
+  VideoTier,
   Partial<Record<VideoResolution, number>>
 > = {
-  'cheap-seedance-2.0': {
+  standard: {
     '480p': 0.36,
     '720p': 0.72,
     '1080p': 1.8,
     '4K': 3.6,
   },
-  'cheap-seedance-2.0-fast': {
+  fast: {
     '480p': 0.288,
     '720p': 0.576,
   },
-  'cheap-seedance-2.0-mini': {
+  mini: {
     '480p': 0.18,
     '720p': 0.36,
   },
@@ -115,8 +120,8 @@ const PRICE_PER_SECOND: Record<
 
 const TERMINAL_STATUSES = new Set(['SUCCESS', 'FAILURE'])
 
-function resolutionsForModel(model: VideoModel): VideoResolution[] {
-  return model === 'cheap-seedance-2.0'
+function resolutionsForTier(tier: VideoTier): VideoResolution[] {
+  return tier === 'standard'
     ? ['480p', '720p', '1080p', '4K']
     : ['480p', '720p']
 }
@@ -209,7 +214,7 @@ export function VideoGeneration() {
   const form = useForm<VideoFormValues>({
     resolver: zodResolver(videoFormSchema),
     defaultValues: {
-      model: 'cheap-seedance-2.0-fast',
+      model: '',
       prompt: '',
       duration: 5,
       resolution: '720p',
@@ -226,7 +231,33 @@ export function VideoGeneration() {
   const resolution = form.watch('resolution')
   const duration = form.watch('duration')
   const mode = form.watch('mode')
-  const allowedResolutions = resolutionsForModel(model)
+  const modelsQuery = useQuery({
+    queryKey: ['video-generation-models'],
+    queryFn: getVideoModels,
+    retry: false,
+  })
+  const selectedModel = modelsQuery.data?.find((item) => item.id === model)
+  const selectedTier = selectedModel?.tier ?? 'standard'
+  const allowedResolutions = resolutionsForTier(selectedTier)
+  let modelDescription = t(
+    'No available video models are configured in Channels'
+  )
+  if (modelsQuery.isLoading) {
+    modelDescription = t('Loading models from Channels')
+  } else if (modelsQuery.data?.length) {
+    modelDescription = t('{{count}} available video models', {
+      count: modelsQuery.data.length,
+    })
+  }
+
+  useEffect(() => {
+    const firstModel = modelsQuery.data?.[0]
+    if (!firstModel) return
+    const currentModel = form.getValues('model')
+    if (!modelsQuery.data?.some((item) => item.id === currentModel)) {
+      form.setValue('model', firstModel.id)
+    }
+  }, [form, modelsQuery.data])
 
   useEffect(() => {
     if (!allowedResolutions.includes(resolution)) {
@@ -235,9 +266,9 @@ export function VideoGeneration() {
   }, [allowedResolutions, form, resolution])
 
   const estimatedPrice = useMemo(() => {
-    const pricePerSecond = PRICE_PER_SECOND[model][resolution] ?? 0
+    const pricePerSecond = PRICE_PER_SECOND[selectedTier][resolution] ?? 0
     return pricePerSecond * (Number.isFinite(duration) ? duration : 0)
-  }, [duration, model, resolution])
+  }, [duration, resolution, selectedTier])
 
   const currentTaskQuery = useQuery({
     queryKey: ['video-task', currentTaskId],
@@ -364,16 +395,21 @@ export function VideoGeneration() {
                         <FormControl>
                           <NativeSelect
                             className='w-full'
+                            disabled={
+                              modelsQuery.isLoading ||
+                              (modelsQuery.data?.length ?? 0) === 0
+                            }
                             value={field.value}
                             onChange={field.onChange}
                           >
-                            {VIDEO_MODELS.map((item) => (
-                              <NativeSelectOption key={item} value={item}>
-                                {item}
+                            {(modelsQuery.data ?? []).map((item) => (
+                              <NativeSelectOption key={item.id} value={item.id}>
+                                {item.id}
                               </NativeSelectOption>
                             ))}
                           </NativeSelect>
                         </FormControl>
+                        <FormDescription>{modelDescription}</FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -678,7 +714,10 @@ export function VideoGeneration() {
                       ¥{estimatedPrice.toFixed(4)}
                     </p>
                     <p className='text-muted-foreground text-xs'>
-                      ¥{(PRICE_PER_SECOND[model][resolution] ?? 0).toFixed(4)}
+                      ¥
+                      {(
+                        PRICE_PER_SECOND[selectedTier][resolution] ?? 0
+                      ).toFixed(4)}
                       {' / '}
                       {t('second')}
                     </p>
@@ -689,7 +728,11 @@ export function VideoGeneration() {
                   className='w-full'
                   size='lg'
                   type='submit'
-                  disabled={createMutation.isPending || isUploading}
+                  disabled={
+                    createMutation.isPending ||
+                    isUploading ||
+                    (modelsQuery.data?.length ?? 0) === 0
+                  }
                 >
                   {createMutation.isPending || isUploading ? (
                     <LoaderCircle className='animate-spin' />

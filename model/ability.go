@@ -30,6 +30,13 @@ type AbilityWithChannel struct {
 	ChannelType int `json:"channel_type"`
 }
 
+type EnabledChannelModel struct {
+	Model        string `json:"model"`
+	ModelMapping string `json:"model_mapping"`
+	ChannelType  int    `json:"channel_type"`
+	Priority     int64  `json:"priority"`
+}
+
 func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 	var abilities []AbilityWithChannel
 	err := DB.Table("abilities").
@@ -38,6 +45,39 @@ func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 		Where("abilities.enabled = ?", true).
 		Scan(&abilities).Error
 	return abilities, err
+}
+
+func getEnabledChannelModelsForGroups(groups []string, channelType *int) ([]EnabledChannelModel, error) {
+	if len(groups) == 0 {
+		return []EnabledChannelModel{}, nil
+	}
+
+	query := DB.Table("abilities").
+		Select(
+			"abilities.model, COALESCE(channels.model_mapping, '') AS model_mapping, "+
+				"channels.type AS channel_type, COALESCE(abilities.priority, 0) AS priority",
+		).
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled).
+		Where("abilities."+commonGroupCol+" IN ?", groups)
+	if channelType != nil {
+		query = query.Where("channels.type = ?", *channelType)
+	}
+
+	var bindings []EnabledChannelModel
+	err := query.
+		Order("abilities.priority DESC").
+		Order("abilities.model ASC").
+		Scan(&bindings).Error
+	return bindings, err
+}
+
+func GetEnabledChannelModelsForGroups(groups []string) ([]EnabledChannelModel, error) {
+	return getEnabledChannelModelsForGroups(groups, nil)
+}
+
+func GetEnabledChannelModelsForGroupsByType(groups []string, channelType int) ([]EnabledChannelModel, error) {
+	return getEnabledChannelModelsForGroups(groups, &channelType)
 }
 
 func GetGroupEnabledModels(group string) []string {

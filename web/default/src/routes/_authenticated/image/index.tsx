@@ -21,10 +21,13 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { ImageGeneration } from '@/features/image-generation'
 import { isSidebarModuleEnabled } from '@/lib/nav-modules'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/image/')({
   beforeLoad: () => {
-    if (!isSidebarModuleEnabled('chat', 'image')) {
+    const role = useAuthStore.getState().auth.user?.role ?? ROLE.GUEST
+    if (role < ROLE.ADMIN && !isSidebarModuleEnabled('chat', 'image')) {
       throw redirect({ to: '/dashboard' })
     }
   },

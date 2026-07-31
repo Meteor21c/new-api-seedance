@@ -17,12 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-export const VIDEO_MODELS = [
-  'cheap-seedance-2.0',
-  'cheap-seedance-2.0-fast',
-  'cheap-seedance-2.0-mini',
-] as const
-
 export const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p', '4K'] as const
 
 export const VIDEO_ASPECT_RATIOS = [
@@ -36,13 +30,13 @@ export const VIDEO_ASPECT_RATIOS = [
 
 export const VIDEO_MODES = ['text_with_reference', 'start_end_frame'] as const
 
-export type VideoModel = (typeof VIDEO_MODELS)[number]
+export type VideoTier = 'standard' | 'fast' | 'mini'
 export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number]
 export type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIOS)[number]
 export type VideoMode = (typeof VIDEO_MODES)[number]
 
 export interface VideoGenerationRequest {
-  model: VideoModel
+  model: string
   prompt: string
   duration: number
   resolution: VideoResolution
@@ -55,6 +49,18 @@ export interface VideoGenerationRequest {
   end_image_url?: string
   start_material_id?: string
   end_material_id?: string
+}
+
+export interface GenerationModel {
+  id: string
+  tier?: VideoTier
+}
+
+export interface GenerationModelsResponse {
+  success: boolean
+  message?: string
+  data?: GenerationModel[]
+  fallback?: boolean
 }
 
 export interface MaterialUploadResponse {

@@ -92,10 +92,22 @@ export function ImageGeneration() {
     queryFn: getImageModels,
     retry: false,
   })
+  let modelDescription = t(
+    'No available image models are configured in Channels'
+  )
+  if (modelsQuery.isLoading) {
+    modelDescription = t('Loading models from Channels')
+  } else if (modelsQuery.data?.length) {
+    modelDescription = t('{{count}} available image models', {
+      count: modelsQuery.data.length,
+    })
+  }
 
   useEffect(() => {
     const firstModel = modelsQuery.data?.[0]
-    if (firstModel && !form.getValues('model')) {
+    if (!firstModel) return
+    const currentModel = form.getValues('model')
+    if (!modelsQuery.data?.includes(currentModel)) {
       form.setValue('model', firstModel)
     }
   }, [form, modelsQuery.data])
@@ -153,26 +165,23 @@ export function ImageGeneration() {
                     <FormItem>
                       <FormLabel>{t('Model')}</FormLabel>
                       <FormControl>
-                        <Input
-                          {...field}
-                          list='image-generation-models'
-                          placeholder={t('Enter a configured image model')}
-                        />
+                        <NativeSelect
+                          className='w-full'
+                          disabled={
+                            modelsQuery.isLoading ||
+                            (modelsQuery.data?.length ?? 0) === 0
+                          }
+                          value={field.value}
+                          onChange={field.onChange}
+                        >
+                          {(modelsQuery.data ?? []).map((model) => (
+                            <NativeSelectOption key={model} value={model}>
+                              {model}
+                            </NativeSelectOption>
+                          ))}
+                        </NativeSelect>
                       </FormControl>
-                      <datalist id='image-generation-models'>
-                        {(modelsQuery.data ?? []).map((model) => (
-                          <option key={model} value={model} />
-                        ))}
-                      </datalist>
-                      <FormDescription>
-                        {modelsQuery.data?.length
-                          ? t('{{count}} available image models', {
-                              count: modelsQuery.data.length,
-                            })
-                          : t(
-                              'Enter the exact model name configured in Channels'
-                            )}
-                      </FormDescription>
+                      <FormDescription>{modelDescription}</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -298,7 +307,10 @@ export function ImageGeneration() {
                 <Button
                   className='w-full'
                   type='submit'
-                  disabled={createMutation.isPending}
+                  disabled={
+                    createMutation.isPending ||
+                    (modelsQuery.data?.length ?? 0) === 0
+                  }
                 >
                   {createMutation.isPending ? (
                     <LoaderCircle className='animate-spin' />

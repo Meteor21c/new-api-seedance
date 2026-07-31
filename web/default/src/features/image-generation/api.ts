@@ -39,14 +39,14 @@ export type ImageGenerationResponse = {
   data: GeneratedImage[]
 }
 
-type PricingModel = {
-  model_name?: string
-  supported_endpoint_types?: string[]
+type GenerationModel = {
+  id: string
 }
 
-type PricingResponse = {
+type GenerationModelsResponse = {
   success?: boolean
-  data?: PricingModel[]
+  data?: GenerationModel[]
+  fallback?: boolean
 }
 
 export async function createImage(
@@ -61,18 +61,12 @@ export async function createImage(
 }
 
 export async function getImageModels(): Promise<string[]> {
-  const response = await api.get<PricingResponse>('/api/pricing', {
-    skipErrorHandler: true,
-  })
-  const models = response.data.data ?? []
-  return [
-    ...new Set(
-      models
-        .filter((model) =>
-          model.supported_endpoint_types?.includes('image-generation')
-        )
-        .map((model) => model.model_name?.trim() ?? '')
-        .filter(Boolean)
-    ),
-  ].sort((left, right) => left.localeCompare(right))
+  const response = await api.get<GenerationModelsResponse>(
+    '/api/user/generation_models',
+    {
+      params: { type: 'image' },
+      skipErrorHandler: true,
+    }
+  )
+  return (response.data.data ?? []).map((model) => model.id)
 }

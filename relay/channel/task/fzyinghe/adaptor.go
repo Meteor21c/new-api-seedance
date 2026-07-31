@@ -153,6 +153,10 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 	}
+	req.Model, err = mappedRequestModel(req.Model, c.GetString("model_mapping"))
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_model_mapping", http.StatusBadRequest)
+	}
 
 	var options inputOptions
 	if err := common.UnmarshalBodyReusable(c, &options); err != nil {
@@ -168,6 +172,30 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	}
 	c.Set(requestContextKey, payload)
 	return nil
+}
+
+func mappedRequestModel(modelName string, rawMapping string) (string, error) {
+	if strings.TrimSpace(rawMapping) == "" || strings.TrimSpace(rawMapping) == "{}" {
+		return modelName, nil
+	}
+	var mapping map[string]string
+	if err := common.Unmarshal([]byte(rawMapping), &mapping); err != nil {
+		return "", errors.Wrap(err, "parse model mapping")
+	}
+
+	current := modelName
+	visited := map[string]bool{current: true}
+	for {
+		next := strings.TrimSpace(mapping[current])
+		if next == "" || next == current {
+			return current, nil
+		}
+		if visited[next] {
+			return "", errors.New("model mapping contains a cycle")
+		}
+		visited[next] = true
+		current = next
+	}
 }
 
 func resolveMaterialOptions(c *gin.Context, options *inputOptions) error {

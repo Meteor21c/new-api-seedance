@@ -21,11 +21,23 @@ import { api } from '@/lib/api'
 
 import type {
   MaterialUploadResponse,
+  GenerationModelsResponse,
   VideoCreateResponse,
   VideoGenerationRequest,
   VideoTaskListResponse,
   VideoTaskResponse,
 } from './types'
+
+export async function getVideoModels() {
+  const response = await api.get<GenerationModelsResponse>(
+    '/api/user/generation_models',
+    {
+      params: { type: 'video' },
+      skipErrorHandler: true,
+    }
+  )
+  return response.data.data ?? []
+}
 
 function materialContentType(file: File): string {
   if (file.type) return file.type
