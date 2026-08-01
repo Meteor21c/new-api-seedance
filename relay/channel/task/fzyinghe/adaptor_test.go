@@ -206,6 +206,30 @@ func TestNormalizeRequestRequiresBothStartAndEndFrames(t *testing.T) {
 	assert.Equal(t, "start_end_frame", payload.Mode)
 }
 
+func TestNormalizeRequestAddsMissingSeedanceImageMentions(t *testing.T) {
+	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
+		Model:    "cheap-seedance-2.0-mini",
+		Prompt:   "让仓鼠自然地吃西瓜",
+		Duration: 5,
+		Images: []string{
+			"reference:https://api.example.com/material-one.jpg",
+			"https://api.example.com/material-two.webp",
+		},
+	}, inputOptions{Resolution: "480p"})
+	require.NoError(t, err)
+	assert.Contains(t, payload.Input, "@image1")
+	assert.Contains(t, payload.Input, "@image2")
+
+	payload, err = normalizeRequest(relaycommon.TaskSubmitReq{
+		Model:    "cheap-seedance-2.0-mini",
+		Prompt:   "使用 @image1 的主体生成视频",
+		Duration: 5,
+		Images:   []string{"https://api.example.com/material.jpg"},
+	}, inputOptions{Resolution: "480p"})
+	require.NoError(t, err)
+	assert.Equal(t, "使用 @image1 的主体生成视频", payload.Input)
+}
+
 func TestNormalizeRequestRejectsPrivateAndUnsupportedReferences(t *testing.T) {
 	_, err := normalizeRequest(relaycommon.TaskSubmitReq{
 		Model:    "cheap-seedance-2.0",

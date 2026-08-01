@@ -63,6 +63,8 @@ jobs:
             common/model.go \
             controller/generation_models.go \
             controller/generation_models_test.go \
+            controller/material.go \
+            controller/mcp.go \
             controller/playground.go \
             controller/playground_image_test.go \
             i18n/keys.go \
@@ -81,8 +83,11 @@ jobs:
             relay/relay_task.go \
             router/api-router.go \
             router/material-router.go \
+            router/material-router_test.go \
             router/relay-router.go \
-            router/video-router.go)"
+            router/video-router.go \
+            service/oss_material.go \
+            service/oss_material_test.go)"
           go test ./relay/channel/task/fzyinghe
           go test ./relay/constant
           go test ./controller ./middleware ./model ./relay ./router

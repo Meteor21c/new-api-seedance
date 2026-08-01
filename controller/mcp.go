@@ -470,7 +470,7 @@ func mediaMCPTools() []mcpTool {
 					},
 					"reference_material_ids": map[string]any{
 						"type":        "array",
-						"description": "Temporary material IDs returned by create_material_upload for reference images.",
+						"description": "Temporary material IDs returned by create_material_upload for reference images. Preserve their order. For Seedance, reference them in the prompt as @image1, @image2, and so on.",
 						"items":       stringSchema("Temporary material ID."),
 					},
 					"start_image_url":   stringSchema("Public URL for the start frame image."),

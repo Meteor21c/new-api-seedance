@@ -1,11 +1,16 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -15,6 +20,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
@@ -53,6 +59,17 @@ type MaterialUpload struct {
 	ExpiresAt  int64             `json:"expires_at"`
 }
 
+type MaterialObjectMetadata struct {
+	ContentType   string
+	ContentLength int64
+	FileName      string
+}
+
+type MaterialObject struct {
+	MaterialObjectMetadata
+	Body io.ReadCloser
+}
+
 type materialToken struct {
 	Version     int    `json:"v"`
 	UserID      int    `json:"user_id"`
@@ -63,16 +80,17 @@ type materialToken struct {
 }
 
 type materialStorageConfig struct {
-	Region          string
-	Endpoint        string
-	Bucket          string
-	Prefix          string
-	RoleName        string
-	MaxFileSize     int64
-	UploadTTL       time.Duration
-	DownloadTTL     time.Duration
-	TokenTTL        time.Duration
-	CleanupDelay    time.Duration
+	Region        string
+	Endpoint      string
+	Bucket        string
+	Prefix        string
+	RoleName      string
+	PublicBaseURL string
+	MaxFileSize   int64
+	UploadTTL     time.Duration
+	DownloadTTL   time.Duration
+	TokenTTL      time.Duration
+	CleanupDelay  time.Duration
 }
 
 func CreateMaterialUpload(ctx context.Context, userID int, request MaterialUploadRequest) (*MaterialUpload, error) {
@@ -176,22 +194,166 @@ func ResolveMaterialIDs(ctx context.Context, userID int, materialIDs []string) (
 		if err != nil {
 			return nil, nil, fmt.Errorf("material upload is unavailable: %w", err)
 		}
-		if head.ContentLength <= 0 || head.ContentLength > cfg.MaxFileSize || head.ContentLength != token.SizeBytes {
-			return nil, nil, errors.New("uploaded material size does not match its upload request")
+		if head.ContentLength > cfg.MaxFileSize {
+			return nil, nil, errors.New("uploaded material exceeds the configured file size limit")
+		}
+		if _, metadataErr := validateMaterialMetadata(token, head.ContentLength, materialString(head.ContentType)); metadataErr != nil {
+			return nil, nil, metadataErr
 		}
 
-		result, err := client.Presign(ctx, &oss.GetObjectRequest{
-			Bucket: oss.Ptr(cfg.Bucket),
-			Key:    oss.Ptr(token.ObjectKey),
-		}, oss.PresignExpires(cfg.DownloadTTL))
-		if err != nil {
-			return nil, nil, fmt.Errorf("create OSS download signature: %w", err)
+		materialURL, ok := buildMaterialPublicURL(cfg.PublicBaseURL, strings.TrimSpace(rawID), token.ContentType)
+		if !ok {
+			result, presignErr := client.Presign(ctx, &oss.GetObjectRequest{
+				Bucket: oss.Ptr(cfg.Bucket),
+				Key:    oss.Ptr(token.ObjectKey),
+			}, oss.PresignExpires(cfg.DownloadTTL))
+			if presignErr != nil {
+				return nil, nil, fmt.Errorf("create OSS download signature: %w", presignErr)
+			}
+			materialURL = result.URL
 		}
-		urls = append(urls, result.URL)
+		urls = append(urls, materialURL)
 		objectKeys = append(objectKeys, token.ObjectKey)
 		seen[token.ObjectKey] = struct{}{}
 	}
 	return urls, objectKeys, nil
+}
+
+// StatMaterialObject validates a public material token and returns metadata
+// without exposing OSS credentials. It is used by the unauthenticated HEAD
+// endpoint that media providers call before downloading a reference image.
+func StatMaterialObject(ctx context.Context, materialID, requestedFileName string) (*MaterialObjectMetadata, error) {
+	cfg, token, client, err := prepareMaterialAccess(materialID, requestedFileName)
+	if err != nil {
+		return nil, err
+	}
+	result, err := client.HeadObject(ctx, &oss.HeadObjectRequest{
+		Bucket: oss.Ptr(cfg.Bucket),
+		Key:    oss.Ptr(token.ObjectKey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("material is unavailable: %w", err)
+	}
+	return validateMaterialMetadata(token, result.ContentLength, materialString(result.ContentType))
+}
+
+// OpenMaterialObject streams a short-lived private OSS object through New API.
+// Only the first 512 bytes are buffered so the image signature can be checked;
+// the remainder is copied directly from OSS to the requesting media provider.
+func OpenMaterialObject(ctx context.Context, materialID, requestedFileName string) (*MaterialObject, error) {
+	cfg, token, client, err := prepareMaterialAccess(materialID, requestedFileName)
+	if err != nil {
+		return nil, err
+	}
+	result, err := client.GetObject(ctx, &oss.GetObjectRequest{
+		Bucket: oss.Ptr(cfg.Bucket),
+		Key:    oss.Ptr(token.ObjectKey),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("material is unavailable: %w", err)
+	}
+
+	metadata, err := validateMaterialMetadata(token, result.ContentLength, materialString(result.ContentType))
+	if err != nil {
+		_ = result.Body.Close()
+		return nil, err
+	}
+	prefix := make([]byte, 512)
+	readBytes, readErr := io.ReadFull(result.Body, prefix)
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		_ = result.Body.Close()
+		return nil, fmt.Errorf("read material signature: %w", readErr)
+	}
+	prefix = prefix[:readBytes]
+	if detected := http.DetectContentType(prefix); detected != metadata.ContentType {
+		_ = result.Body.Close()
+		return nil, errors.New("uploaded material content does not match its declared image type")
+	}
+
+	return &MaterialObject{
+		MaterialObjectMetadata: *metadata,
+		Body: &materialReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(prefix), result.Body),
+			Closer: result.Body,
+		},
+	}, nil
+}
+
+type materialReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func prepareMaterialAccess(materialID, requestedFileName string) (materialStorageConfig, materialToken, *oss.Client, error) {
+	cfg, err := loadMaterialStorageConfig()
+	if err != nil {
+		return materialStorageConfig{}, materialToken{}, nil, err
+	}
+	token, err := decodeMaterialToken(strings.TrimSpace(materialID))
+	if err != nil {
+		return materialStorageConfig{}, materialToken{}, nil, err
+	}
+	if token.ExpiresAt < time.Now().Unix() {
+		return materialStorageConfig{}, materialToken{}, nil, errors.New("material_id has expired")
+	}
+	if !strings.HasPrefix(token.ObjectKey, cfg.Prefix+strconv.Itoa(token.UserID)+"/") {
+		return materialStorageConfig{}, materialToken{}, nil, errors.New("material object path is invalid")
+	}
+	_, expectedExtension, err := normalizeMaterialType("", token.ContentType)
+	if err != nil || path.Ext(token.ObjectKey) != expectedExtension || path.Ext(requestedFileName) != expectedExtension {
+		return materialStorageConfig{}, materialToken{}, nil, errors.New("material file type is invalid")
+	}
+	client, err := getMaterialClient(cfg)
+	if err != nil {
+		return materialStorageConfig{}, materialToken{}, nil, err
+	}
+	return cfg, token, client, nil
+}
+
+func validateMaterialMetadata(token materialToken, contentLength int64, contentType string) (*MaterialObjectMetadata, error) {
+	declaredType, extension, err := normalizeMaterialType("", token.ContentType)
+	if err != nil {
+		return nil, errors.New("material image type is invalid")
+	}
+	storedType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if storedType != declaredType {
+		return nil, errors.New("stored material content type does not match its upload request")
+	}
+	if contentLength <= 0 || contentLength != token.SizeBytes {
+		return nil, errors.New("stored material size does not match its upload request")
+	}
+	return &MaterialObjectMetadata{
+		ContentType:   declaredType,
+		ContentLength: contentLength,
+		FileName:      "material" + extension,
+	}, nil
+}
+
+func buildMaterialPublicURL(baseURL, materialID, contentType string) (string, bool) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	parsed, err := url.Parse(baseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "localhost" {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast()) {
+		return "", false
+	}
+	_, extension, err := normalizeMaterialType("", contentType)
+	if err != nil || strings.TrimSpace(materialID) == "" {
+		return "", false
+	}
+	return baseURL + "/v1/materials/content/" + url.PathEscape(materialID) + "/material" + extension, true
+}
+
+func materialString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func ScheduleMaterialCleanup(objectKeys []string) {
@@ -291,17 +453,23 @@ func loadMaterialStorageConfig() (materialStorageConfig, error) {
 		return materialStorageConfig{}, errors.New("MATERIAL_OSS_PREFIX is invalid")
 	}
 
+	publicBaseURL := firstMaterialEnv("MATERIAL_PUBLIC_BASE_URL", "MATERIAL_OSS_PUBLIC_BASE_URL")
+	if publicBaseURL == "" {
+		publicBaseURL = system_setting.ServerAddress
+	}
+
 	return materialStorageConfig{
-		Region:       region,
-		Endpoint:     firstMaterialEnv("MATERIAL_OSS_ENDPOINT", "OSS_ENDPOINT"),
-		Bucket:       bucket,
-		Prefix:       prefix,
-		RoleName:     firstMaterialEnv("MATERIAL_OSS_ROLE_NAME", "OSS_ROLE_NAME"),
-		MaxFileSize:  materialEnvInt64("MATERIAL_OSS_MAX_FILE_SIZE", defaultMaterialMaxFileSize),
-		UploadTTL:    materialEnvDuration("MATERIAL_OSS_UPLOAD_URL_TTL", defaultMaterialUploadTTL),
-		DownloadTTL:  materialEnvDuration("MATERIAL_OSS_DOWNLOAD_URL_TTL", defaultMaterialDownloadTTL),
-		TokenTTL:     materialEnvDuration("MATERIAL_OSS_TOKEN_TTL", defaultMaterialTokenTTL),
-		CleanupDelay: materialEnvDuration("MATERIAL_OSS_CLEANUP_DELAY", defaultMaterialCleanupDelay),
+		Region:        region,
+		Endpoint:      firstMaterialEnv("MATERIAL_OSS_ENDPOINT", "OSS_ENDPOINT"),
+		Bucket:        bucket,
+		Prefix:        prefix,
+		RoleName:      firstMaterialEnv("MATERIAL_OSS_ROLE_NAME", "OSS_ROLE_NAME"),
+		PublicBaseURL: publicBaseURL,
+		MaxFileSize:   materialEnvInt64("MATERIAL_OSS_MAX_FILE_SIZE", defaultMaterialMaxFileSize),
+		UploadTTL:     materialEnvDuration("MATERIAL_OSS_UPLOAD_URL_TTL", defaultMaterialUploadTTL),
+		DownloadTTL:   materialEnvDuration("MATERIAL_OSS_DOWNLOAD_URL_TTL", defaultMaterialDownloadTTL),
+		TokenTTL:      materialEnvDuration("MATERIAL_OSS_TOKEN_TTL", defaultMaterialTokenTTL),
+		CleanupDelay:  materialEnvDuration("MATERIAL_OSS_CLEANUP_DELAY", defaultMaterialCleanupDelay),
 	}, nil
 }
 

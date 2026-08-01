@@ -428,7 +428,7 @@ function buildMcpPrompt(
     '2. 仅在当前会话中使用和记住令牌，不得把令牌写入项目代码、日志或最终回复。',
     '3. 先确认以下工具可用：create_video、get_video、create_material_upload。',
     '4. 如果提示词为空，只向用户索要提示词，不得猜测或提交。',
-    '5. 如果有本地图片：先调用 create_material_upload；使用返回的 upload_url、method 和全部 headers 上传原始文件；将 material_id 传给 create_video；不要把本地路径直接传给 create_video。',
+    '5. 如果有本地图片：先调用 create_material_upload；使用返回的 upload_url、method 和全部 headers 上传原始文件；将 material_id 传给 create_video；不要把本地路径直接传给 create_video。Seedance 普通参考图按顺序对应 @image1、@image2……，提示词应明确引用实际使用的图片。',
     '6. 严格使用用户填写的模型和参数，不要自行修改；“无”表示对应参数留空。',
     '7. 如果参数不符合模型支持范围，应先提示用户修正，不要提交。',
     '8. create_video 返回 task_id 后，定期调用 get_video，直到 SUCCESS 或 FAILURE。',

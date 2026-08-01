@@ -8,6 +8,14 @@ import (
 )
 
 func SetMaterialRouter(router *gin.Engine) {
+	publicRouter := router.Group("/v1/materials")
+	publicRouter.Use(middleware.RouteTag("relay"))
+	publicRouter.Use(middleware.SystemPerformanceCheck())
+	{
+		publicRouter.GET("/content/:material_id/:file_name", controller.MaterialContent)
+		publicRouter.HEAD("/content/:material_id/:file_name", controller.MaterialContent)
+	}
+
 	playgroundRouter := router.Group("/pg/materials")
 	playgroundRouter.Use(middleware.RouteTag("relay"))
 	playgroundRouter.Use(middleware.SystemPerformanceCheck())

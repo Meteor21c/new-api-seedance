@@ -778,6 +778,12 @@ func normalizeRequest(req relaycommon.TaskSubmitReq, options inputOptions) (requ
 		if mode == "start_end_frame" && (!hasStartReference || !hasEndReference) {
 			return requestPayload{}, fmt.Errorf("start_end_frame mode requires both start and end images")
 		}
+		if mode == "text_with_reference" {
+			prompt, err = ensureSeedanceImageMentions(prompt, references)
+			if err != nil {
+				return requestPayload{}, err
+			}
+		}
 	}
 
 	audio := true
@@ -822,6 +828,40 @@ func normalizeRequest(req relaycommon.TaskSubmitReq, options inputOptions) (requ
 		CameraControl:   options.CameraControl,
 		CfgScale:        options.CfgScale,
 	}, nil
+}
+
+// ensureSeedanceImageMentions keeps local-material use reliable for clients
+// that upload reference images but describe them in natural language instead
+// of using Seedance's required positional markers. Existing markers are kept
+// intact and only missing normal (non start/end frame) image markers are added.
+func ensureSeedanceImageMentions(prompt string, references []string) (string, error) {
+	imageIndex := 0
+	missing := make([]string, 0, len(references))
+	for _, rawReference := range references {
+		prefix, referenceURL := splitReference(rawReference)
+		if prefix != "reference" {
+			continue
+		}
+		switch referenceExtension(referenceURL) {
+		case ".jpg", ".jpeg", ".png", ".webp":
+			imageIndex++
+			marker := fmt.Sprintf("@image%d", imageIndex)
+			if !strings.Contains(prompt, marker) {
+				missing = append(missing, marker)
+			}
+		}
+	}
+	if len(missing) == 0 {
+		return prompt, nil
+	}
+	if prompt != "" {
+		prompt += "\n"
+	}
+	prompt += "请使用 " + strings.Join(missing, "、") + " 作为视觉参考。"
+	if utf8.RuneCountInString(prompt) > maxPromptCharacters {
+		return "", fmt.Errorf("prompt plus required Seedance image references must not exceed %d characters", maxPromptCharacters)
+	}
+	return prompt, nil
 }
 
 func removeUnprefixedReference(references []string, target string) []string {
