@@ -3,7 +3,10 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -96,6 +99,21 @@ func PlaygroundVideo(c *gin.Context) {
 }
 
 func PlaygroundImage(c *gin.Context) {
+	imageEditForm, err := validatePlaygroundImageEdit(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"message": err.Error(),
+				"type":    "invalid_request_error",
+				"code":    "invalid_reference_image",
+			},
+		})
+		return
+	}
+	if imageEditForm != nil {
+		defer imageEditForm.RemoveAll()
+	}
+
 	useAccessToken := c.GetBool("use_access_token")
 	if useAccessToken {
 		c.JSON(http.StatusForbidden, gin.H{
@@ -140,4 +158,53 @@ func PlaygroundImage(c *gin.Context) {
 	}
 
 	Relay(c, types.RelayFormatOpenAIImage)
+}
+
+func validatePlaygroundImageEdit(c *gin.Context) (*multipart.Form, error) {
+	if !strings.HasPrefix(c.Request.URL.Path, "/pg/images/edits") {
+		return nil, nil
+	}
+
+	form, err := common.ParseMultipartFormReusable(c)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse reference images: %w", err)
+	}
+
+	var images []*multipart.FileHeader
+	for field, files := range form.File {
+		if field == "image" || field == "image[]" || strings.HasPrefix(field, "image[") {
+			images = append(images, files...)
+		}
+	}
+	if len(images) == 0 {
+		return form, errors.New("at least one reference image is required")
+	}
+	if len(images) > 3 {
+		return form, errors.New("no more than 3 reference images are allowed")
+	}
+
+	allowedExtensions := map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".webp": true,
+	}
+	allowedTypes := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/webp": true,
+	}
+	const maxReferenceImageSize = 10 * 1024 * 1024
+	for _, image := range images {
+		extension := strings.ToLower(filepath.Ext(image.Filename))
+		contentType := strings.ToLower(strings.TrimSpace(image.Header.Get("Content-Type")))
+		if !allowedExtensions[extension] || !allowedTypes[contentType] {
+			return form, fmt.Errorf("reference image %q must be a static JPG, PNG, or WEBP file", image.Filename)
+		}
+		if image.Size <= 0 || image.Size > maxReferenceImageSize {
+			return form, fmt.Errorf("reference image %q must be between 1 byte and 10 MiB", image.Filename)
+		}
+	}
+
+	return form, nil
 }

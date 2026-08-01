@@ -367,77 +367,76 @@ function buildMcpPrompt(
   endFrameFile: File | null
 ): string {
   const endpoint = mcpEndpoint()
-  const request = {
-    model: values.model.trim(),
-    prompt: values.prompt.trim(),
-    duration: values.duration,
-    resolution: values.resolution,
-    aspect_ratio: values.aspectRatio,
-    mode: values.mode,
-    audio: values.audio,
-    reference_images: splitReferenceUrls(values.referenceUrls),
-    reference_material_ids: [],
-    start_image_url: values.startImageUrl.trim(),
-    end_image_url: values.endImageUrl.trim(),
-    start_material_id: '',
-    end_material_id: '',
-  }
-  const localMaterials = [
-    ...referenceFiles.map(
-      (file) =>
-        `reference: ${file.name} (${file.type || 'unknown MIME type'}, ${file.size} bytes)`
+  const referenceUrls = splitReferenceUrls(values.referenceUrls)
+  const normalizedReferences = referenceUrls.map((value) =>
+    value.replace(/^reference:/i, '').trim()
+  )
+  const referenceVideos = normalizedReferences.filter((value) =>
+    /\.mp4(?:$|[?#])/i.test(value)
+  )
+  const referenceImages = [
+    ...referenceFiles.map((file) => `本地文件：${file.name}`),
+    ...normalizedReferences.filter(
+      (value) => !/\.(?:mp3|wav|mp4)(?:$|[?#])/i.test(value)
     ),
-    ...(startFrameFile
-      ? [
-          `start frame: ${startFrameFile.name} (${startFrameFile.type || 'unknown MIME type'}, ${startFrameFile.size} bytes)`,
-        ]
-      : []),
-    ...(endFrameFile
-      ? [
-          `end frame: ${endFrameFile.name} (${endFrameFile.type || 'unknown MIME type'}, ${endFrameFile.size} bytes)`,
-        ]
-      : []),
   ]
+  const modeLabels: Record<VideoFormValues['mode'], string> = {
+    text_with_reference: '文本与参考素材',
+    start_end_frame: '首尾帧',
+  }
+  const describeItems = (items: string[]) =>
+    items.length > 0 ? items.join('、') : '无'
+  const startFrame =
+    (startFrameFile && `本地文件：${startFrameFile.name}`) ||
+    values.startImageUrl.trim() ||
+    '无'
+  const endFrame =
+    (endFrameFile && `本地文件：${endFrameFile.name}`) ||
+    values.endImageUrl.trim() ||
+    '无'
 
   return [
-    '请把下面内容作为一次 New API 视频 MCP 配置与生成任务执行。',
-    '先完成 MCP 连接并确认工具可用；不要把令牌写入代码、日志或回复。',
+    '【视频生成任务】',
     '',
-    '【MCP 连接】',
-    `服务地址：${endpoint}`,
-    '令牌：请将 YOUR_NEW_API_TOKEN 替换成我提供的 New API 用户令牌（不要使用上游 API Key）。',
+    '请使用已配置的 meteor-video MCP 生成视频。',
     '',
-    '只执行当前客户端对应的代码块：Codex 执行 Codex 块，Claude Code 执行 Claude 块。',
-    'Codex（终端执行，已有同名配置时先删除再添加）：',
-    '```bash',
-    "export METEOR_VIDEO_TOKEN='YOUR_NEW_API_TOKEN'",
-    `codex mcp remove meteor-video >/dev/null 2>&1 || true`,
-    `codex mcp add meteor-video --url '${endpoint}' --bearer-token-env-var METEOR_VIDEO_TOKEN`,
-    'codex mcp list',
-    '```',
+    `模型：${values.model.trim() || '未填写'}`,
+    `MCP 服务地址：${endpoint}`,
+    '令牌：请将创建的【视频专用分组】下的 API Key 填入这里：YOUR_NEW_API_TOKEN',
+    '提示词：',
+    values.prompt.trim(),
     '',
-    'Claude Code（终端执行）：',
-    '```bash',
-    "export METEOR_VIDEO_TOKEN='YOUR_NEW_API_TOKEN'",
-    `claude mcp add --transport http meteor-video '${endpoint}' --header "Authorization: Bearer \${METEOR_VIDEO_TOKEN}"`,
-    'claude mcp list',
-    '```',
+    '参数：',
+    `- 时长：${values.duration} 秒`,
+    `- 分辨率：${values.resolution}`,
+    `- 画幅比例：${values.aspectRatio}`,
+    `- 音频：${values.audio ? '开启' : '关闭'}`,
+    `- 生成模式：${modeLabels[values.mode]}`,
     '',
-    '重启或刷新 Codex/Claude，确认出现 create_video、get_video、create_material_upload；图片任务还可使用 create_image。',
-    '连接成功后，若本次提示词不为空就调用 create_video；若提示词为空，先向我索要提示词，不要猜测或直接提交。',
-    'create_video 返回 task_id 后，每隔数秒调用 get_video，直到 SUCCESS 或 FAILURE；成功时返回 result_url。',
+    `参考图片：${describeItems(referenceImages)}`,
+    `参考视频：${describeItems(referenceVideos)}`,
+    `首帧图片：${startFrame}`,
+    `尾帧图片：${endFrame}`,
     '',
-    '【本次视频参数】',
-    '严格按以下 JSON 传给 create_video；空字符串和空数组表示当前未填写，不要自行补全。',
-    '```json',
-    JSON.stringify(request, null, 2),
-    '```',
+    '-------------------------------------------------------------------',
     '',
-    '【本地素材】',
-    localMaterials.length > 0
-      ? localMaterials.join('\n')
-      : '（空；没有选择本地素材）',
-    '复制的文字不包含本地文件字节。若要使用上面的本地文件，请在 Codex/Claude 中重新附加文件，然后先调用 create_material_upload，按返回的 upload_url、method 和全部 headers 用 HTTP PUT 上传原始字节，再把返回的 material_id 放入对应的 material_id 参数；不要把本地路径传给 create_video。',
+    '【AI 执行须知】',
+    '',
+    '你是 MCP 视频生成执行器。',
+    '',
+    '1. 仅使用当前客户端的 meteor-video MCP；若尚未配置或鉴权失败，用上述服务地址和令牌完成配置后再继续。',
+    '2. 仅在当前会话中使用和记住令牌，不得把令牌写入项目代码、日志或最终回复。',
+    '3. 先确认以下工具可用：create_video、get_video、create_material_upload。',
+    '4. 如果提示词为空，只向用户索要提示词，不得猜测或提交。',
+    '5. 如果有本地图片：先调用 create_material_upload；使用返回的 upload_url、method 和全部 headers 上传原始文件；将 material_id 传给 create_video；不要把本地路径直接传给 create_video。',
+    '6. 严格使用用户填写的模型和参数，不要自行修改；“无”表示对应参数留空。',
+    '7. 如果参数不符合模型支持范围，应先提示用户修正，不要提交。',
+    '8. create_video 返回 task_id 后，定期调用 get_video，直到 SUCCESS 或 FAILURE。',
+    '9. 成功时返回视频地址；失败时返回明确错误原因。',
+    '10. 不要在同一用户上一个图片或视频任务结束前提交新的同类任务。',
+    '11. 如没有额外指定，会话下的默认视频生成方式不变。',
+    '',
+    '注意：复制内容不包含本地文件字节。如上面显示本地文件，请在 Codex/Claude 中重新附加同名文件。',
   ].join('\n')
 }
 

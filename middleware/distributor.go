@@ -88,6 +88,7 @@ func isGenerationSubmitRequest(c *gin.Context) bool {
 func isImageGenerationSubmit(c *gin.Context) bool {
 	path := c.Request.URL.Path
 	return strings.HasPrefix(path, "/pg/images/generations") ||
+		strings.HasPrefix(path, "/pg/images/edits") ||
 		strings.HasPrefix(path, "/v1/images/generations") ||
 		strings.HasPrefix(path, "/v1/images/edits") ||
 		strings.HasPrefix(path, "/v1/edits")
@@ -458,7 +459,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
 		modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "dall-e")
-	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") {
+	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") || strings.HasPrefix(c.Request.URL.Path, "/pg/images/edits") {
 		//modelRequest.Model = common.GetStringIfEmpty(c.PostForm("model"), "gpt-image-1")
 		contentType := c.ContentType()
 		if slices.Contains([]string{gin.MIMEPOSTForm, gin.MIMEMultipartPOSTForm}, contentType) {

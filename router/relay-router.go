@@ -81,6 +81,12 @@ func SetRelayRouter(router *gin.Engine) {
 			middleware.Distribute(),
 			controller.PlaygroundImage,
 		)
+		imagePlaygroundRouter.POST(
+			"/images/edits",
+			middleware.GenerationConcurrency("image"),
+			middleware.Distribute(),
+			controller.PlaygroundImage,
+		)
 	}
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RouteTag("relay"))

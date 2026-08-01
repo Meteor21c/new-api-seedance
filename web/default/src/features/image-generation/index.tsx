@@ -23,8 +23,10 @@ import {
   Clock3,
   ExternalLink,
   ImageIcon,
+  ImagePlus,
   LoaderCircle,
   Sparkles,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
@@ -67,6 +69,7 @@ import {
   getImageModels,
   type GeneratedImage,
   type ImageHistoryEntry,
+  type ImageGenerationInput,
   type ImageGenerationRequest,
   type TrackedImageResult,
   type TrackedImageRequest,
@@ -82,6 +85,14 @@ const imageFormSchema = z.object({
 })
 
 type ImageFormValues = z.infer<typeof imageFormSchema>
+
+const MAX_REFERENCE_IMAGES = 3
+const MAX_REFERENCE_IMAGE_SIZE = 10 * 1024 * 1024
+const REFERENCE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+
+function isSupportedReferenceImage(file: File): boolean {
+  return REFERENCE_IMAGE_TYPES.has(file.type.toLowerCase())
+}
 
 const imageRenderKeys = new WeakMap<GeneratedImage, string>()
 let imageRenderKeySequence = 0
@@ -195,6 +206,7 @@ export function ImageGeneration() {
   const [imagesRestored, setImagesRestored] = useState(() =>
     Boolean(readGenerationRecord<TrackedImageResult>('image-latest'))
   )
+  const [referenceImages, setReferenceImages] = useState<File[]>([])
   const [imageHistory, setImageHistory] = useState<ImageHistoryEntry[]>(() =>
     readGenerationHistory<ImageHistoryEntry>('image-history')
   )
@@ -361,7 +373,11 @@ export function ImageGeneration() {
     if (values.quality !== 'auto') request.quality = values.quality
     setPendingAfterReload(true)
     setImagesRestored(false)
-    createMutation.mutate(request)
+    const input: ImageGenerationInput = {
+      request,
+      referenceImages,
+    }
+    createMutation.mutate(input)
   }
 
   return (
@@ -438,6 +454,104 @@ export function ImageGeneration() {
                     </FormItem>
                   )}
                 />
+
+                <div className='space-y-3'>
+                  <div className='space-y-1'>
+                    <label
+                      className='text-sm font-medium'
+                      htmlFor='image-reference-files'
+                    >
+                      {t('Reference images (optional)')}
+                    </label>
+                    <Input
+                      id='image-reference-files'
+                      type='file'
+                      accept='image/jpeg,image/png,image/webp'
+                      multiple
+                      disabled={createMutation.isPending || pendingAfterReload}
+                      onChange={(event) => {
+                        const selected = [...(event.currentTarget.files ?? [])]
+                        event.currentTarget.value = ''
+                        if (selected.length === 0) return
+                        const next = [...referenceImages, ...selected]
+                        if (next.length > MAX_REFERENCE_IMAGES) {
+                          toast.error(
+                            t('Select no more than 3 reference images')
+                          )
+                          return
+                        }
+                        if (!selected.every(isSupportedReferenceImage)) {
+                          toast.error(
+                            t('Only JPG, PNG, and WEBP images are supported')
+                          )
+                          return
+                        }
+                        if (
+                          selected.some(
+                            (file) => file.size > MAX_REFERENCE_IMAGE_SIZE
+                          )
+                        ) {
+                          toast.error(
+                            t('Each reference image must not exceed 10 MiB')
+                          )
+                          return
+                        }
+                        setReferenceImages(next)
+                      }}
+                    />
+                    <p className='text-muted-foreground text-sm'>
+                      {t(
+                        'Upload up to 3 static JPG, PNG, or WEBP images, up to 10 MiB each'
+                      )}
+                    </p>
+                  </div>
+
+                  {referenceImages.length > 0 && (
+                    <div className='space-y-2 rounded-md border p-3'>
+                      {referenceImages.map((file, index) => (
+                        <div
+                          key={`${file.name}-${file.size}-${file.lastModified}`}
+                          className='flex items-center justify-between gap-3'
+                        >
+                          <span className='min-w-0 truncate text-sm'>
+                            {file.name}
+                          </span>
+                          <Button
+                            type='button'
+                            size='icon-sm'
+                            variant='ghost'
+                            aria-label={t('Remove {{name}}', {
+                              name: file.name,
+                            })}
+                            disabled={
+                              createMutation.isPending || pendingAfterReload
+                            }
+                            onClick={() =>
+                              setReferenceImages((files) =>
+                                files.filter(
+                                  (_, fileIndex) => fileIndex !== index
+                                )
+                              )
+                            }
+                          >
+                            <X />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {referenceImages.length > 0 && (
+                    <Alert>
+                      <ImagePlus />
+                      <AlertDescription>
+                        {t(
+                          'Reference images use the configured upstream image-edit API; support depends on the selected model and channel'
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
 
                 <div className='grid gap-4 md:grid-cols-3'>
                   <FormField

@@ -56,6 +56,11 @@ export type TrackedImageRequest = {
   request: ImageGenerationRequest
 }
 
+export type ImageGenerationInput = {
+  request: ImageGenerationRequest
+  referenceImages?: File[]
+}
+
 export type TrackedImageResult = {
   id: string
   images: GeneratedImage[]
@@ -89,8 +94,29 @@ type GenerationModelsResponse = {
 }
 
 export async function createImage(
-  request: ImageGenerationRequest
+  input: ImageGenerationInput
 ): Promise<ImageGenerationResponse> {
+  const { request, referenceImages = [] } = input
+  if (referenceImages.length > 0) {
+    const form = new FormData()
+    form.append('model', request.model)
+    form.append('prompt', request.prompt)
+    form.append('n', String(request.n))
+    form.append('response_format', request.response_format)
+    if (request.group) form.append('group', request.group)
+    if (request.size) form.append('size', request.size)
+    if (request.quality) form.append('quality', request.quality)
+    const fieldName = referenceImages.length === 1 ? 'image' : 'image[]'
+    referenceImages.forEach((file) => form.append(fieldName, file, file.name))
+
+    const response = await api.post<ImageGenerationResponse>(
+      '/pg/images/edits',
+      form,
+      { skipErrorHandler: true }
+    )
+    return response.data
+  }
+
   const response = await api.post<ImageGenerationResponse>(
     '/pg/images/generations',
     request,
@@ -105,15 +131,16 @@ export async function createImage(
  * a request when a user switches sections without refreshing the browser.
  */
 export async function createImageTracked(
-  request: ImageGenerationRequest
+  input: ImageGenerationInput
 ): Promise<ImageGenerationResponse> {
+  const { request } = input
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
   writeGenerationRecord<TrackedImageRequest>('image-pending', {
     id: requestId,
     request,
   })
   try {
-    const response = await createImage(request)
+    const response = await createImage(input)
     const createdAt = Date.now()
     const entry: ImageHistoryEntry = {
       id: requestId,
