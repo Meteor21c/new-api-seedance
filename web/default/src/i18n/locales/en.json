@@ -25,6 +25,7 @@
     "Submit a request to see generated images here": "Submit a request to see generated images here",
     "Generated image": "Generated image",
     "No image data returned": "No image data returned",
+    "Image URL expired or the upstream provider returned 404": "Image URL expired or the upstream provider returned 404",
     "Open image": "Open image",
     "Image generated successfully": "Image generated successfully",
     "Image generation is still in progress": "Image generation is still in progress",

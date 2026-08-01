@@ -96,6 +96,12 @@ func GetUserGenerationModels(c *gin.Context) {
 		return
 	}
 	groups := usableGroupNames(user.Group)
+	// An explicitly scoped API token must see the same generation models it
+	// can actually route to. Tokens without a group keep the user's complete
+	// authorized group set; "auto" keeps the cross-group model list.
+	if tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup); tokenGroup != "" && tokenGroup != "auto" {
+		groups = []string{tokenGroup}
+	}
 
 	kind := strings.ToLower(strings.TrimSpace(c.Query("type")))
 	var bindings []model.EnabledChannelModel

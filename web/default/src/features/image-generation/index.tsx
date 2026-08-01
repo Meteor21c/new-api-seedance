@@ -96,10 +96,72 @@ function getImageRenderKey(image: GeneratedImage, scope: string): string {
   return `${scope}:${key}`
 }
 
-function getImageSource(image: GeneratedImage): string {
-  if (image.url) return image.url
-  if (image.b64_json) return `data:image/png;base64,${image.b64_json}`
-  return ''
+function getImageSources(image: GeneratedImage): string[] {
+  const sources: string[] = []
+  if (image.url) sources.push(image.url)
+  // Some OpenAI-compatible providers return both a short-lived URL and a
+  // reusable Base64 payload. Keep the URL as the lightweight first choice,
+  // but fall back to Base64 when the provider URL has expired or returns 404.
+  if (image.b64_json) sources.push(`data:image/png;base64,${image.b64_json}`)
+  return sources
+}
+
+type ImagePreviewProps = {
+  image: GeneratedImage
+  alt: string
+  compact?: boolean
+}
+
+function ImagePreview({ image, alt, compact = false }: ImagePreviewProps) {
+  const { t } = useTranslation()
+  const sources = getImageSources(image)
+  const [sourceIndex, setSourceIndex] = useState(0)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    setSourceIndex(0)
+    setFailed(false)
+  }, [image])
+
+  const source = sources[sourceIndex] ?? ''
+  const hasSource = sources.length > 0
+
+  return (
+    <div className='space-y-2'>
+      {source && !failed ? (
+        <img
+          key={source}
+          className={`bg-muted w-full rounded-md object-contain ${compact ? 'aspect-square' : 'max-h-[32rem]'}`}
+          src={source}
+          alt={alt}
+          onError={() => {
+            if (sourceIndex + 1 < sources.length) {
+              setSourceIndex((index) => index + 1)
+            } else {
+              setFailed(true)
+            }
+          }}
+        />
+      ) : (
+        <div className='bg-muted text-muted-foreground flex aspect-square items-center justify-center rounded-md p-4 text-center text-sm'>
+          {hasSource
+            ? t('Image URL expired or the upstream provider returned 404')
+            : t('No image data returned')}
+        </div>
+      )}
+      {source && !failed && (
+        <Button
+          className='w-full'
+          size={compact ? 'sm' : undefined}
+          variant='outline'
+          render={<a href={source} target='_blank' rel='noreferrer' />}
+        >
+          <ExternalLink />
+          {t('Open image')}
+        </Button>
+      )}
+    </div>
+  )
 }
 
 function imageRequestErrorMessage(error: unknown): string {
@@ -539,43 +601,19 @@ export function ImageGeneration() {
               ) : (
                 <div className='max-h-[70vh] space-y-4 overflow-y-auto pr-1'>
                   {images.map((image) => {
-                    const source = getImageSource(image)
                     return (
                       <div
                         key={getImageRenderKey(image, 'latest')}
                         className='space-y-3 rounded-lg border p-3'
                       >
-                        {source ? (
-                          <img
-                            className='bg-muted max-h-[32rem] w-full rounded-md object-contain'
-                            src={source}
-                            alt={image.revised_prompt || t('Generated image')}
-                          />
-                        ) : (
-                          <div className='bg-muted text-muted-foreground flex aspect-square items-center justify-center rounded-md'>
-                            {t('No image data returned')}
-                          </div>
-                        )}
+                        <ImagePreview
+                          image={image}
+                          alt={image.revised_prompt || t('Generated image')}
+                        />
                         {image.revised_prompt && (
                           <p className='text-muted-foreground text-xs'>
                             {image.revised_prompt}
                           </p>
-                        )}
-                        {source && (
-                          <Button
-                            className='w-full'
-                            variant='outline'
-                            render={
-                              <a
-                                href={source}
-                                target='_blank'
-                                rel='noreferrer'
-                              />
-                            }
-                          >
-                            <ExternalLink />
-                            {t('Open image')}
-                          </Button>
                         )}
                       </div>
                     )
@@ -602,12 +640,9 @@ export function ImageGeneration() {
               ) : (
                 <div className='space-y-4'>
                   {imageHistory.map((entry) => {
-                    const imagesWithSources = entry.images
-                      .map((image) => ({
-                        image,
-                        source: getImageSource(image),
-                      }))
-                      .filter((item) => item.source)
+                    const imagesWithSources = entry.images.filter(
+                      (image) => getImageSources(image).length > 0
+                    )
                     return (
                       <div
                         key={entry.id}
@@ -626,33 +661,18 @@ export function ImageGeneration() {
                         </p>
                         {imagesWithSources.length > 0 ? (
                           <div className='grid gap-2 sm:grid-cols-2'>
-                            {imagesWithSources.map(({ image, source }) => (
+                            {imagesWithSources.map((image) => (
                               <div
                                 key={getImageRenderKey(image, entry.id)}
                                 className='space-y-2'
                               >
-                                <img
-                                  className='bg-muted aspect-square w-full rounded-md object-contain'
-                                  src={source}
+                                <ImagePreview
+                                  image={image}
                                   alt={
                                     image.revised_prompt || t('Generated image')
                                   }
+                                  compact
                                 />
-                                <Button
-                                  className='w-full'
-                                  size='sm'
-                                  variant='outline'
-                                  render={
-                                    <a
-                                      href={source}
-                                      target='_blank'
-                                      rel='noreferrer'
-                                    />
-                                  }
-                                >
-                                  <ExternalLink />
-                                  {t('Open image')}
-                                </Button>
                               </div>
                             ))}
                           </div>

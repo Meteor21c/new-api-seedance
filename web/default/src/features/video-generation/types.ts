@@ -42,6 +42,8 @@ export type VideoMode = (typeof VIDEO_MODES)[number]
 
 export interface VideoGenerationRequest {
   model: string
+  /** Optional authorized group override; omitted requests auto-match a usable group. */
+  group?: string
   prompt: string
   duration: number
   resolution: VideoResolution

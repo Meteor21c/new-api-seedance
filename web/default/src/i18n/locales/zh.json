@@ -25,6 +25,7 @@
     "Submit a request to see generated images here": "提交请求后，生成的图片会显示在这里",
     "Generated image": "生成的图片",
     "No image data returned": "上游没有返回图片数据",
+    "Image URL expired or the upstream provider returned 404": "图片地址已过期或上游服务返回了 404",
     "Open image": "打开图片",
     "Image generated successfully": "图片生成成功",
     "Image generation is still in progress": "图片仍在生成中",

@@ -31,6 +31,8 @@ import { saveImageGeneration } from './storage'
 
 export type ImageGenerationRequest = {
   model: string
+  /** Optional authorized group override; omitted requests auto-match a usable group. */
+  group?: string
   prompt: string
   n: number
   size?: string

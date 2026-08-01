@@ -80,6 +80,31 @@ func GetEnabledChannelModelsForGroupsByType(groups []string, channelType int) ([
 	return getEnabledChannelModelsForGroups(groups, &channelType)
 }
 
+// HasEnabledChannelForGroupModel reports whether a user-authorized group has
+// at least one enabled channel for the requested model. Generation playgrounds
+// can expose models from several usable groups; this check lets the relay pick
+// the group that actually owns the model instead of assuming the user's
+// primary group does.
+func HasEnabledChannelForGroupModel(group string, modelName string, channelType *int) bool {
+	group = strings.TrimSpace(group)
+	modelName = strings.TrimSpace(modelName)
+	if group == "" || modelName == "" {
+		return false
+	}
+
+	query := DB.Table("abilities").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+commonGroupCol+" = ?", group).
+		Where("abilities.model = ?", modelName).
+		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled)
+	if channelType != nil {
+		query = query.Where("channels.type = ?", *channelType)
+	}
+
+	var count int64
+	return query.Limit(1).Count(&count).Error == nil && count > 0
+}
+
 func GetGroupEnabledModels(group string) []string {
 	var models []string
 	// Find distinct models
