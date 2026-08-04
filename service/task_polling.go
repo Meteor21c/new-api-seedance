@@ -529,7 +529,15 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		if task.FinishTime == 0 {
 			task.FinishTime = now
 		}
-		if strings.HasPrefix(taskResult.Url, "data:") {
+		if ch.Type == constant.ChannelTypeFZYingheVideo && taskResult.Url != "" &&
+			taskResult.Url != taskcommon.BuildProxyURL(task.TaskID) &&
+			!strings.HasPrefix(taskResult.Url, "data:") {
+			// FZYinghe returns short-lived provider links. Expose our stable,
+			// authenticated proxy URL to clients and retain the upstream URL
+			// only for the server-side fetch.
+			task.PrivateData.UpstreamResultURL = taskResult.Url
+			task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
+		} else if strings.HasPrefix(taskResult.Url, "data:") {
 			// data: URI (e.g. Vertex base64 encoded video) — keep in Data, not in ResultURL
 			task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 		} else if taskResult.Url != "" {

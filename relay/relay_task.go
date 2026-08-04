@@ -548,6 +548,20 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
+	resultURL := task.GetResultURL()
+	// FZYinghe provider links are short-lived. For legacy tasks created before
+	// the server-side proxy was introduced, expose the stable proxy URL too;
+	// the proxy handler still falls back to the stored provider URL while it is
+	// available. New tasks already store this URL in ResultURL.
+	if task.Status == model.TaskStatusSuccess &&
+		task.PrivateData.UpstreamResultURL == "" &&
+		resultURL != "" &&
+		resultURL != taskcommon.BuildProxyURL(task.TaskID) &&
+		!strings.HasPrefix(resultURL, "data:") &&
+		task.Platform == constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeFZYingheVideo)) {
+		resultURL = taskcommon.BuildProxyURL(task.TaskID)
+	}
+
 	return &dto.TaskDto{
 		ID:         task.ID,
 		CreatedAt:  task.CreatedAt,
@@ -561,7 +575,7 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 		Action:     task.Action,
 		Status:     string(task.Status),
 		FailReason: task.FailReason,
-		ResultURL:  task.GetResultURL(),
+		ResultURL:  resultURL,
 		SubmitTime: task.SubmitTime,
 		StartTime:  task.StartTime,
 		FinishTime: task.FinishTime,

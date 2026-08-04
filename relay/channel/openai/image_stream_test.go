@@ -1,17 +1,40 @@
 package openai
 
 import (
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNormalizeOpenAIImageContentBody(t *testing.T) {
+	payload := []byte(`{"kind":"upstream","url":"data:image/png;base64,aGVsbG8="}`)
+	token := base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+	wrappedURL := "https://multimodal.example/v1/images/content/" + token
+	body := `{"created":1710000000,"data":[{"url":"` + wrappedURL + `","revised_prompt":"draw a cat"}],"usage":{"total_tokens":7}}`
+
+	normalized := normalizeOpenAIImageContentBody([]byte(body))
+	var response struct {
+		Data  []map[string]string `json:"data"`
+		Usage map[string]int      `json:"usage"`
+	}
+	require.NoError(t, common.Unmarshal(normalized, &response))
+	require.Len(t, response.Data, 1)
+	require.Equal(t, "aGVsbG8=", response.Data[0]["b64_json"])
+	require.NotContains(t, response.Data[0], "url")
+	require.Equal(t, 7, response.Usage["total_tokens"])
+
+	ordinary := []byte(`{"data":[{"url":"https://cdn.example/image.png"}]}`)
+	require.Equal(t, string(ordinary), string(normalizeOpenAIImageContentBody(ordinary)))
+}
 
 func newImageTestContext(t *testing.T, body, contentType string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()

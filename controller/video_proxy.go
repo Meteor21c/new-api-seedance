@@ -110,8 +110,13 @@ func VideoProxy(c *gin.Context) {
 		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
 	default:
-		// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)
-		videoURL = task.GetResultURL()
+		// FZYinghe links are short-lived. New tasks expose a stable same-origin
+		// proxy URL in ResultURL and keep the provider link separately for this
+		// server-side fetch. Fall back to ResultURL for legacy tasks/providers.
+		videoURL = task.PrivateData.UpstreamResultURL
+		if videoURL == "" {
+			videoURL = task.GetResultURL()
+		}
 	}
 
 	videoURL = strings.TrimSpace(videoURL)

@@ -1,10 +1,12 @@
 package openai
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -28,6 +30,14 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
+
+	// Some upstream OpenAI-compatible image providers return a very long,
+	// short-lived URL whose path contains an embedded data:image payload. Such
+	// URLs commonly exceed browser/proxy limits and later expire with 404. Turn
+	// that provider-specific wrapper into b64_json before forwarding it. The
+	// normalizer is deliberately a no-op for ordinary URLs and preserves all
+	// response fields (including usage).
+	responseBody = normalizeOpenAIImageContentBody(responseBody)
 
 	var usageResp dto.SimpleResponse
 	err = common.Unmarshal(responseBody, &usageResp)
@@ -101,6 +111,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
+		raw = normalizeOpenAIImageContentBody(raw)
 		lastStreamData = raw
 		if isOpenAIImageStreamErrorEvent(raw) {
 			// Record the error as a soft error; the scanner drives the final
@@ -200,6 +211,8 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 
+	responseBody = normalizeOpenAIImageContentBody(responseBody)
+
 	var imageResp dto.ImageResponse
 	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -261,6 +274,126 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 	}
 	return &usageResp.Usage, nil
+}
+
+// normalizeOpenAIImageContentBody replaces the provider-specific
+// /v1/images/content/<token> wrapper with b64_json. The wrapper token is a
+// base64url-encoded JSON envelope containing a data:image/... URI. Returning
+// the bytes inline avoids exposing a multi-megabyte URL that browsers,
+// reverse proxies, or an expiring upstream endpoint cannot reliably serve.
+//
+// Only this exact content endpoint shape and a data:image base64 payload are
+// accepted; ordinary external URLs are left untouched.
+func normalizeOpenAIImageContentBody(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := common.Unmarshal(body, &envelope); err != nil {
+		return body
+	}
+	changed := false
+
+	if rawData, ok := envelope["data"]; ok {
+		var items []map[string]json.RawMessage
+		if err := common.Unmarshal(rawData, &items); err == nil {
+			for _, item := range items {
+				if normalizeOpenAIImageContentItem(item) {
+					changed = true
+				}
+			}
+			if changed {
+				if normalized, err := common.Marshal(items); err == nil {
+					envelope["data"] = normalized
+				}
+			}
+		}
+	}
+
+	// Image SSE providers may emit a single image object rather than a
+	// top-level data array. Normalize that shape as well.
+	if normalizeOpenAIImageContentItem(envelope) {
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	normalized, err := common.Marshal(envelope)
+	if err != nil {
+		return body
+	}
+	return normalized
+}
+
+func normalizeOpenAIImageContentItem(item map[string]json.RawMessage) bool {
+	rawURL, ok := item["url"]
+	if !ok {
+		return false
+	}
+	var imageURL string
+	if err := common.Unmarshal(rawURL, &imageURL); err != nil {
+		return false
+	}
+	b64, ok := decodeWrappedImageURL(imageURL)
+	if !ok {
+		return false
+	}
+	encoded, err := common.Marshal(b64)
+	if err != nil {
+		return false
+	}
+	item["b64_json"] = encoded
+	delete(item, "url")
+	return true
+}
+
+func decodeWrappedImageURL(imageURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(imageURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	const marker = "/v1/images/content/"
+	idx := strings.Index(parsed.Path, marker)
+	if idx < 0 {
+		return "", false
+	}
+	token := strings.Trim(strings.TrimPrefix(parsed.Path[idx+len(marker):], "/"), "/")
+	if token == "" || strings.Contains(token, "/") {
+		return "", false
+	}
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", false
+	}
+	var envelope struct {
+		Kind string `json:"kind"`
+		URL  string `json:"url"`
+	}
+	if err := common.Unmarshal(payload, &envelope); err != nil || envelope.Kind != "upstream" {
+		return "", false
+	}
+	dataURL := strings.TrimSpace(envelope.URL)
+	if !strings.HasPrefix(dataURL, "data:image/") {
+		return "", false
+	}
+	comma := strings.IndexByte(dataURL, ',')
+	if comma <= 0 || !strings.Contains(strings.ToLower(dataURL[:comma]), ";base64") {
+		return "", false
+	}
+	imagePayload := dataURL[comma+1:]
+	decoded, err := base64.StdEncoding.DecodeString(imagePayload)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(imagePayload)
+		if err != nil {
+			return "", false
+		}
+	}
+	return base64.StdEncoding.EncodeToString(decoded), true
 }
 
 func writeOpenaiImageStreamPayload(c *gin.Context, eventName string, payload any) error {

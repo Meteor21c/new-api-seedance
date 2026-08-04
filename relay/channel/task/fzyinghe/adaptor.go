@@ -534,7 +534,19 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 	video.CreatedAt = int64(originTask.CreatedAt)
 	video.CompletedAt = originTask.UpdatedAt
 	video.Model = originTask.Properties.OriginModelName
-	if resultURL := originTask.GetResultURL(); resultURL != "" {
+	resultURL := originTask.GetResultURL()
+	// Legacy FZYinghe tasks stored the expiring provider URL directly. Return
+	// the stable New API content endpoint so OpenAI-compatible clients do not
+	// receive a link that later becomes a 404. The proxy route handles the
+	// legacy provider URL server-side.
+	if originTask.Status == model.TaskStatusSuccess &&
+		originTask.PrivateData.UpstreamResultURL == "" &&
+		resultURL != "" &&
+		resultURL != taskcommon.BuildProxyURL(originTask.TaskID) &&
+		!strings.HasPrefix(resultURL, "data:") {
+		resultURL = taskcommon.BuildProxyURL(originTask.TaskID)
+	}
+	if resultURL != "" {
 		video.SetMetadata("url", resultURL)
 	}
 	if originTask.Status == model.TaskStatusFailure {
