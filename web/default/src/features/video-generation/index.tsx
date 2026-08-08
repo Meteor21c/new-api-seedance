@@ -27,6 +27,7 @@ import {
   ImagePlus,
   LoaderCircle,
   Volume2,
+  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
@@ -122,6 +123,17 @@ function isKlingKind(kind: VideoModelKind): boolean {
 }
 
 const KLING_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const
+const MAX_VIDEO_REFERENCE_IMAGES = 4
+const MAX_VIDEO_REFERENCE_IMAGE_SIZE = 10 * 1024 * 1024
+const VIDEO_REFERENCE_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+])
+
+function isSupportedVideoReferenceImage(file: File): boolean {
+  return VIDEO_REFERENCE_IMAGE_TYPES.has(file.type)
+}
 
 function aspectRatiosForKind(kind: VideoModelKind): VideoAspectRatio[] {
   if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
@@ -730,6 +742,10 @@ export function VideoGeneration() {
       )
       return
     }
+    if (referenceFiles.length > MAX_VIDEO_REFERENCE_IMAGES) {
+      toast.error(t('Select no more than 4 reference images'))
+      return
+    }
     const isKling = isKlingKind(selectedKind)
     if (!allowedResolutions.includes(values.resolution)) {
       toast.error(
@@ -1106,26 +1122,91 @@ export function VideoGeneration() {
                           type='file'
                           accept='image/jpeg,image/png,image/webp'
                           multiple
-                          onChange={(event) =>
-                            setReferenceFiles(
-                              [...(event.target.files ?? [])].slice(
-                                0,
-                                selectedKind === 'kling-v3' ? 2 : 9
+                          onChange={(event) => {
+                            const selected = [
+                              ...(event.currentTarget.files ?? []),
+                            ]
+                            event.currentTarget.value = ''
+                            if (selected.length === 0) return
+
+                            const next = [...referenceFiles, ...selected]
+                            if (next.length > MAX_VIDEO_REFERENCE_IMAGES) {
+                              toast.error(
+                                t('Select no more than 4 reference images')
                               )
-                            )
-                          }
+                              return
+                            }
+                            if (
+                              !selected.every(isSupportedVideoReferenceImage)
+                            ) {
+                              toast.error(
+                                t(
+                                  'Only JPG, PNG, and WEBP images are supported'
+                                )
+                              )
+                              return
+                            }
+                            if (
+                              selected.some(
+                                (file) =>
+                                  file.size > MAX_VIDEO_REFERENCE_IMAGE_SIZE
+                              )
+                            ) {
+                              toast.error(
+                                t('Each reference image must not exceed 10 MiB')
+                              )
+                              return
+                            }
+                            setReferenceFiles(next)
+                          }}
                         />
                       </FormControl>
                       <FormDescription>
-                        {referenceFiles.length > 0
-                          ? t('{{count}} image(s) selected', {
+                        {t(
+                          'Upload up to 4 static JPG, PNG, or WEBP images, up to 10 MiB each. Select files again to append.'
+                        )}
+                        {referenceFiles.length > 0 && (
+                          <span className='ml-1'>
+                            {t('{{count}} image(s) selected', {
                               count: referenceFiles.length,
-                            })
-                          : t(
-                              'JPG, PNG, or WEBP; up to 10 MiB each. Files upload directly to OSS.'
-                            )}
+                            })}
+                          </span>
+                        )}
                       </FormDescription>
                     </FormItem>
+
+                    {referenceFiles.length > 0 && (
+                      <div className='space-y-2 rounded-md border p-3'>
+                        {referenceFiles.map((file, index) => (
+                          <div
+                            key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                            className='flex items-center justify-between gap-3'
+                          >
+                            <span className='min-w-0 truncate text-sm'>
+                              {file.name}
+                            </span>
+                            <Button
+                              type='button'
+                              size='icon-sm'
+                              variant='ghost'
+                              aria-label={t('Remove {{name}}', {
+                                name: file.name,
+                              })}
+                              disabled={createMutation.isPending || isUploading}
+                              onClick={() =>
+                                setReferenceFiles((files) =>
+                                  files.filter(
+                                    (_, fileIndex) => fileIndex !== index
+                                  )
+                                )
+                              }
+                            >
+                              <X />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <FormField
                       control={form.control}
                       name='referenceUrls'

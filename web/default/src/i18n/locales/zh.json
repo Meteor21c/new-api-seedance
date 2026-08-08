@@ -86,6 +86,8 @@
     "Reference asset URLs": "参考素材地址",
     "One URL per line. Supports JPG, PNG, WEBP, MP3, WAV, and MP4.": "每行一个地址，支持 JPG、PNG、WEBP、MP3、WAV 和 MP4。",
     "Upload reference images": "上传参考图片",
+    "Upload up to 4 static JPG, PNG, or WEBP images, up to 10 MiB each. Select files again to append.": "最多上传 4 张静态 JPG、PNG 或 WEBP 图片，每张不超过 10 MiB；再次选择文件会追加，不会覆盖已有选择。",
+    "Select no more than 4 reference images": "参考图片最多只能选择 4 张",
     "{{count}} image(s) selected": "已选择 {{count}} 张图片",
     "JPG, PNG, or WEBP; up to 10 MiB each. Files upload directly to OSS.": "支持 JPG、PNG、WEBP，每张不超过 10 MiB；文件将直接上传至 OSS。",
     "Additional reference URLs": "其他参考素材地址",
