@@ -135,6 +135,10 @@ function isSupportedVideoReferenceImage(file: File): boolean {
   return VIDEO_REFERENCE_IMAGE_TYPES.has(file.type)
 }
 
+function videoReferenceFileKey(file: File): string {
+  return `${file.name}-${file.size}-${file.lastModified}-${file.type}`
+}
+
 function aspectRatiosForKind(kind: VideoModelKind): VideoAspectRatio[] {
   if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
     return [...KLING_ASPECT_RATIOS]
@@ -1129,7 +1133,14 @@ export function VideoGeneration() {
                             event.currentTarget.value = ''
                             if (selected.length === 0) return
 
-                            const next = [...referenceFiles, ...selected]
+                            const next = [
+                              ...new Map(
+                                [...referenceFiles, ...selected].map(
+                                  (file) =>
+                                    [videoReferenceFileKey(file), file] as const
+                                )
+                              ).values(),
+                            ]
                             if (next.length > MAX_VIDEO_REFERENCE_IMAGES) {
                               toast.error(
                                 t('Select no more than 4 reference images')
@@ -1177,9 +1188,9 @@ export function VideoGeneration() {
 
                     {referenceFiles.length > 0 && (
                       <div className='space-y-2 rounded-md border p-3'>
-                        {referenceFiles.map((file, index) => (
+                        {referenceFiles.map((file) => (
                           <div
-                            key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                            key={videoReferenceFileKey(file)}
                             className='flex items-center justify-between gap-3'
                           >
                             <span className='min-w-0 truncate text-sm'>
@@ -1196,7 +1207,7 @@ export function VideoGeneration() {
                               onClick={() =>
                                 setReferenceFiles((files) =>
                                   files.filter(
-                                    (_, fileIndex) => fileIndex !== index
+                                    (candidate) => candidate !== file
                                   )
                                 )
                               }
