@@ -422,14 +422,14 @@ func (Task *Task) Insert() error {
 }
 
 type taskSnapshot struct {
-	Status           TaskStatus
-	Progress         string
-	StartTime        int64
-	FinishTime       int64
-	FailReason       string
-	ResultURL        string
+	Status            TaskStatus
+	Progress          string
+	StartTime         int64
+	FinishTime        int64
+	FailReason        string
+	ResultURL         string
 	UpstreamResultURL string
-	Data             json.RawMessage
+	Data              json.RawMessage
 }
 
 func (s taskSnapshot) Equal(other taskSnapshot) bool {
