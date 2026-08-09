@@ -33,7 +33,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build and check default frontend
-        working-directory: web/default
+        working-directory: web
         run: |
           bun run build
           bun run typecheck
