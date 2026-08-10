@@ -21,6 +21,8 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   Clock3,
+  Copy,
+  Download,
   ExternalLink,
   ImageIcon,
   ImagePlus,
@@ -116,25 +118,181 @@ function getImageSources(image: GeneratedImage): string[] {
   return sources
 }
 
+function detectImageMime(bytes: Uint8Array): string {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return 'image/png'
+  }
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return 'image/jpeg'
+  }
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
+    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  return 'image/png'
+}
+
+function decodeEmbeddedImage(image: GeneratedImage): Blob | null {
+  const value =
+    image.b64_json || image.url?.startsWith('data:')
+      ? image.b64_json || image.url
+      : undefined
+  if (!value) return null
+
+  const commaIndex = value.indexOf(',')
+  const header = commaIndex >= 0 ? value.slice(0, commaIndex) : ''
+  const payload = commaIndex >= 0 ? value.slice(commaIndex + 1) : value
+  const binary = window.atob(payload.replaceAll(/\s/g, ''))
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  const mimeType = /^data:([^;]+)/.exec(header)?.[1] || detectImageMime(bytes)
+  return new Blob([bytes], { type: mimeType })
+}
+
+async function resolveImageBlob(
+  image: GeneratedImage,
+  source: string
+): Promise<Blob> {
+  const embedded = decodeEmbeddedImage(image)
+  if (embedded) return embedded
+  if (!source) throw new Error('No image source')
+
+  const response = await fetch(source)
+  if (!response.ok) throw new Error(`Image request failed: ${response.status}`)
+  const blob = await response.blob()
+  if (!blob.type.startsWith('image/')) throw new Error('Not an image')
+  return blob
+}
+
+function imageExtension(mimeType: string): string {
+  if (mimeType === 'image/jpeg') return 'jpg'
+  if (mimeType === 'image/webp') return 'webp'
+  if (mimeType === 'image/gif') return 'gif'
+  return 'png'
+}
+
+async function toClipboardPng(blob: Blob): Promise<Blob> {
+  if (blob.type === 'image/png') return blob
+  const bitmap = await createImageBitmap(blob)
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Canvas is unavailable')
+    context.drawImage(bitmap, 0, 0)
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (converted) =>
+          converted
+            ? resolve(converted)
+            : reject(new Error('PNG conversion failed')),
+        'image/png'
+      )
+    })
+  } finally {
+    bitmap.close()
+  }
+}
+
 type ImagePreviewProps = {
   image: GeneratedImage
   alt: string
   compact?: boolean
+  fileName?: string
 }
 
-function ImagePreview({ image, alt, compact = false }: ImagePreviewProps) {
+function ImagePreview({
+  image,
+  alt,
+  compact = false,
+  fileName = 'generated-image',
+}: ImagePreviewProps) {
   const { t } = useTranslation()
-  const sources = getImageSources(image)
+  const [localSource, setLocalSource] = useState('')
+  const sources = localSource
+    ? [
+        localSource,
+        ...getImageSources(image).filter((item) => item !== image.url),
+      ]
+    : getImageSources(image)
   const [sourceIndex, setSourceIndex] = useState(0)
   const [failed, setFailed] = useState(false)
+  const [action, setAction] = useState<'copy' | 'save' | null>(null)
 
   useEffect(() => {
     setSourceIndex(0)
     setFailed(false)
+    setLocalSource('')
+    try {
+      const blob = decodeEmbeddedImage(image)
+      if (!blob) return
+      const objectUrl = window.URL.createObjectURL(blob)
+      setLocalSource(objectUrl)
+      return () => window.URL.revokeObjectURL(objectUrl)
+    } catch {
+      // The regular URL source remains available when embedded data is invalid.
+    }
   }, [image])
 
   const source = sources[sourceIndex] ?? ''
   const hasSource = sources.length > 0
+
+  const copyImage = async () => {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      toast.error(t('This browser does not support copying images'))
+      return
+    }
+    setAction('copy')
+    try {
+      const blob = await resolveImageBlob(image, source)
+      const clipboardBlob = await toClipboardPng(blob)
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': clipboardBlob }),
+      ])
+      toast.success(t('Image copied to clipboard'))
+    } catch {
+      toast.error(t('Could not copy image'))
+    } finally {
+      setAction(null)
+    }
+  }
+
+  const saveImage = async () => {
+    setAction('save')
+    try {
+      const blob = await resolveImageBlob(image, source)
+      const objectUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = `${fileName}.${imageExtension(blob.type)}`
+      document.body.append(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000)
+      toast.success(t('Image saved'))
+    } catch {
+      toast.error(t('Could not save image'))
+    } finally {
+      setAction(null)
+    }
+  }
 
   return (
     <div className='space-y-2'>
@@ -162,15 +320,46 @@ function ImagePreview({ image, alt, compact = false }: ImagePreviewProps) {
         </div>
       )}
       {source && !failed && (
-        <Button
-          className='w-full'
-          size={compact ? 'sm' : undefined}
-          variant='outline'
-          render={<a href={source} target='_blank' rel='noreferrer' />}
+        <div
+          className={`grid gap-2 ${compact ? 'grid-cols-1' : 'grid-cols-3'}`}
         >
-          <ExternalLink />
-          {t('Open image')}
-        </Button>
+          <Button
+            size={compact ? 'sm' : undefined}
+            variant='outline'
+            render={<a href={source} target='_blank' rel='noreferrer' />}
+          >
+            <ExternalLink />
+            {t('Open image')}
+          </Button>
+          <Button
+            type='button'
+            size={compact ? 'sm' : undefined}
+            variant='outline'
+            disabled={action !== null}
+            onClick={() => void copyImage()}
+          >
+            {action === 'copy' ? (
+              <LoaderCircle className='animate-spin' />
+            ) : (
+              <Copy />
+            )}
+            {t('Copy image')}
+          </Button>
+          <Button
+            type='button'
+            size={compact ? 'sm' : undefined}
+            variant='outline'
+            disabled={action !== null}
+            onClick={() => void saveImage()}
+          >
+            {action === 'save' ? (
+              <LoaderCircle className='animate-spin' />
+            ) : (
+              <Download />
+            )}
+            {t('Save image')}
+          </Button>
+        </div>
       )}
     </div>
   )
@@ -715,7 +904,7 @@ export function ImageGeneration() {
                 </div>
               ) : (
                 <div className='max-h-[70vh] space-y-4 overflow-y-auto pr-1'>
-                  {images.map((image) => {
+                  {images.map((image, index) => {
                     return (
                       <div
                         key={getImageRenderKey(image, 'latest')}
@@ -724,6 +913,7 @@ export function ImageGeneration() {
                         <ImagePreview
                           image={image}
                           alt={image.revised_prompt || t('Generated image')}
+                          fileName={`generated-image-${index + 1}`}
                         />
                         {image.revised_prompt && (
                           <p className='text-muted-foreground text-xs'>
@@ -776,7 +966,7 @@ export function ImageGeneration() {
                         </p>
                         {imagesWithSources.length > 0 ? (
                           <div className='grid gap-2 sm:grid-cols-2'>
-                            {imagesWithSources.map((image) => (
+                            {imagesWithSources.map((image, index) => (
                               <div
                                 key={getImageRenderKey(image, entry.id)}
                                 className='space-y-2'
@@ -787,6 +977,7 @@ export function ImageGeneration() {
                                     image.revised_prompt || t('Generated image')
                                   }
                                   compact
+                                  fileName={`generated-image-${entry.id}-${index + 1}`}
                                 />
                               </div>
                             ))}
