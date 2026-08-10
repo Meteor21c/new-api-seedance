@@ -109,11 +109,10 @@ function getImageRenderKey(image: GeneratedImage, scope: string): string {
 
 function getImageSources(image: GeneratedImage): string[] {
   const sources: string[] = []
-  if (image.url) sources.push(image.url)
-  // Some OpenAI-compatible providers return both a short-lived URL and a
-  // reusable Base64 payload. Keep the URL as the lightweight first choice,
-  // but fall back to Base64 when the provider URL has expired or returns 404.
+  // Prefer reusable image bytes over a short-lived upstream URL. This also
+  // prevents browser extensions from blocking provider content endpoints.
   if (image.b64_json) sources.push(`data:image/png;base64,${image.b64_json}`)
+  if (image.url) sources.push(image.url)
   return sources
 }
 

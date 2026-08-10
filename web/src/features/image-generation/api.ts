@@ -27,6 +27,7 @@ import {
   writeGenerationHistory,
   writeGenerationRecord,
 } from '../generation-storage'
+import { normalizeGeneratedImage } from './normalization'
 import { saveImageGeneration } from './storage'
 
 export type ImageGenerationRequest = {
@@ -74,6 +75,15 @@ export type ImageHistoryEntry = {
   images: GeneratedImage[]
 }
 
+function normalizeImageResponse(
+  response: ImageGenerationResponse
+): ImageGenerationResponse {
+  return {
+    ...response,
+    data: (response.data ?? []).map(normalizeGeneratedImage),
+  }
+}
+
 function persistableImages(images: GeneratedImage[]): GeneratedImage[] {
   return images
     .map(({ url, revised_prompt }) => ({
@@ -114,7 +124,7 @@ export async function createImage(
       form,
       { skipErrorHandler: true }
     )
-    return response.data
+    return normalizeImageResponse(response.data)
   }
 
   const response = await api.post<ImageGenerationResponse>(
@@ -122,7 +132,7 @@ export async function createImage(
     request,
     { skipErrorHandler: true }
   )
-  return response.data
+  return normalizeImageResponse(response.data)
 }
 
 /**
