@@ -32,7 +32,7 @@
     "Submit a request to see generated images here": "提交请求后，生成的图片会显示在这里",
     "Generated image": "生成的图片",
     "No image data returned": "上游没有返回图片数据",
-    "Image URL expired or the upstream provider returned 404": "图片地址已过期或上游服务返回了 404",
+    "Image could not be loaded because the upstream link is unavailable, expired, blocked by cross-origin policy, or returned an error": "图片加载失败：上游链接不可用、已过期、跨域受限，或返回了错误状态",
     "Open image": "打开图片",
     "Image generated successfully": "图片生成成功",
     "Image generation is still in progress": "图片仍在生成中",

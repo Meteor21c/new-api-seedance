@@ -38,7 +38,7 @@ export type ImageGenerationRequest = {
   n: number
   size?: string
   quality?: string
-  response_format: 'url'
+  response_format: 'url' | 'b64_json'
 }
 
 export type GeneratedImage = {

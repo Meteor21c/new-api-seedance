@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -48,6 +49,17 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	// normalizer is deliberately a no-op for ordinary URLs and preserves all
 	// response fields (including usage).
 	responseBody = normalizeOpenAIImageContentBody(responseBody)
+	if imageRequestWantsBase64(info) {
+		responseBody, err = inlineOpenAIImageURLs(c.Request.Context(), responseBody)
+		if err != nil {
+			logger.LogError(c, fmt.Sprintf("failed to preserve generated image response: %v", err))
+			return nil, types.NewOpenAIError(
+				fmt.Errorf("generated image could not be preserved because the upstream image URL was unavailable or invalid"),
+				types.ErrorCodeBadResponseBody,
+				http.StatusBadGateway,
+			)
+		}
+	}
 
 	var usageResp dto.SimpleResponse
 	err = common.Unmarshal(responseBody, &usageResp)
@@ -251,6 +263,17 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 
 	responseBody = normalizeOpenAIImageContentBody(responseBody)
+	if imageRequestWantsBase64(info) {
+		responseBody, err = inlineOpenAIImageURLs(c.Request.Context(), responseBody)
+		if err != nil {
+			logger.LogError(c, fmt.Sprintf("failed to preserve generated image response: %v", err))
+			return nil, types.NewOpenAIError(
+				fmt.Errorf("generated image could not be preserved because the upstream image URL was unavailable or invalid"),
+				types.ErrorCodeBadResponseBody,
+				http.StatusBadGateway,
+			)
+		}
+	}
 
 	// Only decode usage/error. Do not Unmarshal data[] into dto.ImageResponse —
 	// b64_json values are large and would be copied into Go strings then
@@ -411,6 +434,109 @@ func normalizeOpenAIImageContentItem(item map[string]json.RawMessage) bool {
 	item["b64_json"] = encoded
 	delete(item, "url")
 	return true
+}
+
+const (
+	maxGeneratedImageFetchBytes int64 = 10 * 1024 * 1024
+	maxGeneratedImageTotalBytes int64 = 24 * 1024 * 1024
+	maxGeneratedImageURLCount         = 4
+)
+
+var fetchPublicGeneratedImage = service.FetchPublicGeneratedImage
+
+func imageRequestWantsBase64(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	request, ok := info.Request.(*dto.ImageRequest)
+	return ok && request != nil && strings.EqualFold(strings.TrimSpace(request.ResponseFormat), "b64_json")
+}
+
+// inlineOpenAIImageURLs converts ordinary short-lived upstream image URLs to
+// b64_json when the downstream explicitly requested b64_json. The fetch is
+// bounded and SSRF-protected by service.FetchPublicGeneratedImage. Failing the
+// response is intentional: reporting success with a dead URL loses a paid
+// result and leaves the browser with nothing it can persist.
+func inlineOpenAIImageURLs(ctx context.Context, body []byte) ([]byte, error) {
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := common.Unmarshal(body, &envelope); err != nil {
+		return body, nil
+	}
+	changed := false
+	fetchedCount := 0
+	var totalBytes int64
+
+	inlineItem := func(item map[string]json.RawMessage) error {
+		if rawB64, ok := item["b64_json"]; ok {
+			var existing string
+			if common.Unmarshal(rawB64, &existing) == nil && strings.TrimSpace(existing) != "" {
+				return nil
+			}
+		}
+		rawURL, ok := item["url"]
+		if !ok {
+			return nil
+		}
+		var imageURL string
+		if err := common.Unmarshal(rawURL, &imageURL); err != nil || strings.TrimSpace(imageURL) == "" {
+			return nil
+		}
+		if fetchedCount >= maxGeneratedImageURLCount {
+			return fmt.Errorf("upstream returned more than %d remote images", maxGeneratedImageURLCount)
+		}
+		encoded, err := fetchPublicGeneratedImage(ctx, imageURL, maxGeneratedImageFetchBytes)
+		if err != nil {
+			return fmt.Errorf("fetch upstream image %d: %w", fetchedCount+1, err)
+		}
+		decodedBytes := int64(base64.StdEncoding.DecodedLen(len(encoded)))
+		if totalBytes+decodedBytes > maxGeneratedImageTotalBytes {
+			return fmt.Errorf("generated image response exceeds the %d byte total limit", maxGeneratedImageTotalBytes)
+		}
+		totalBytes += decodedBytes
+		fetchedCount++
+		encodedJSON, err := common.Marshal(encoded)
+		if err != nil {
+			return fmt.Errorf("encode upstream image %d: %w", fetchedCount, err)
+		}
+		item["b64_json"] = encodedJSON
+		delete(item, "url")
+		changed = true
+		return nil
+	}
+
+	if rawData, ok := envelope["data"]; ok {
+		var items []map[string]json.RawMessage
+		if err := common.Unmarshal(rawData, &items); err == nil {
+			for _, item := range items {
+				if err := inlineItem(item); err != nil {
+					return nil, err
+				}
+			}
+			if changed {
+				normalized, err := common.Marshal(items)
+				if err != nil {
+					return nil, err
+				}
+				envelope["data"] = normalized
+			}
+		}
+	}
+
+	if err := inlineItem(envelope); err != nil {
+		return nil, err
+	}
+	if !changed {
+		return body, nil
+	}
+	normalized, err := common.Marshal(envelope)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 func decodeWrappedImageURL(imageURL string) (string, bool) {

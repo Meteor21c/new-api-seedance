@@ -101,7 +101,7 @@ func (t *ssrfProtectedRoundTripper) RoundTrip(req *http.Request) (*http.Response
 	if req == nil || req.URL == nil {
 		return nil, fmt.Errorf("invalid request")
 	}
-	if err := ValidateSSRFProtectedFetchURL(req.URL.String()); err != nil {
+	if err := validateURLWithProtectionGetter(req.URL.String(), t.getProtection); err != nil {
 		return nil, err
 	}
 
@@ -110,6 +110,20 @@ func (t *ssrfProtectedRoundTripper) RoundTrip(req *http.Request) (*http.Response
 		return nil, err
 	}
 	return t.transportFor(proxyURL).RoundTrip(req)
+}
+
+func validateURLWithProtectionGetter(urlStr string, getProtection func() (*common.SSRFProtection, bool, error)) error {
+	protection, enabled, err := getProtection()
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return nil
+	}
+	if protection == nil {
+		return fmt.Errorf("SSRF protection is enabled without a policy")
+	}
+	return protection.ValidateURL(urlStr)
 }
 
 func (t *ssrfProtectedRoundTripper) CloseIdleConnections() {

@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +38,72 @@ func TestNormalizeOpenAIImageContentBody(t *testing.T) {
 
 	ordinary := []byte(`{"data":[{"url":"https://cdn.example/image.png"}]}`)
 	require.Equal(t, string(ordinary), string(normalizeOpenAIImageContentBody(ordinary)))
+}
+
+func TestInlineOpenAIImageURLs(t *testing.T) {
+	originalFetch := fetchPublicGeneratedImage
+	t.Cleanup(func() { fetchPublicGeneratedImage = originalFetch })
+
+	fetchPublicGeneratedImage = func(ctx context.Context, rawURL string, maxBytes int64) (string, error) {
+		require.Equal(t, "https://cdn.example/generated.png", rawURL)
+		require.Equal(t, maxGeneratedImageFetchBytes, maxBytes)
+		return base64.StdEncoding.EncodeToString([]byte("image bytes")), nil
+	}
+
+	body := []byte(`{"created":1710000000,"data":[{"url":"https://cdn.example/generated.png","revised_prompt":"cat"}],"usage":{"total_tokens":7}}`)
+	normalized, err := inlineOpenAIImageURLs(context.Background(), body)
+	require.NoError(t, err)
+
+	var response struct {
+		Data []map[string]string `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(normalized, &response))
+	require.Len(t, response.Data, 1)
+	require.Equal(t, base64.StdEncoding.EncodeToString([]byte("image bytes")), response.Data[0]["b64_json"])
+	require.NotContains(t, response.Data[0], "url")
+	require.Equal(t, "cat", response.Data[0]["revised_prompt"])
+}
+
+func TestInlineOpenAIImageURLsSkipsExistingBase64(t *testing.T) {
+	originalFetch := fetchPublicGeneratedImage
+	t.Cleanup(func() { fetchPublicGeneratedImage = originalFetch })
+	fetchPublicGeneratedImage = func(context.Context, string, int64) (string, error) {
+		t.Fatal("fetch must not run when b64_json is already present")
+		return "", nil
+	}
+
+	body := []byte(`{"data":[{"url":"https://cdn.example/generated.png","b64_json":"aW1hZ2U="}]}`)
+	normalized, err := inlineOpenAIImageURLs(context.Background(), body)
+	require.NoError(t, err)
+	require.Equal(t, string(body), string(normalized))
+}
+
+func TestImageRequestWantsBase64(t *testing.T) {
+	require.False(t, imageRequestWantsBase64(nil))
+	require.False(t, imageRequestWantsBase64(&relaycommon.RelayInfo{Request: &dto.ImageRequest{ResponseFormat: "url"}}))
+	require.True(t, imageRequestWantsBase64(&relaycommon.RelayInfo{Request: &dto.ImageRequest{ResponseFormat: " B64_JSON "}}))
+}
+
+func TestOpenaiImageHandlerPreservesRequestedBase64Response(t *testing.T) {
+	originalFetch := fetchPublicGeneratedImage
+	t.Cleanup(func() { fetchPublicGeneratedImage = originalFetch })
+	fetchPublicGeneratedImage = func(context.Context, string, int64) (string, error) {
+		return base64.StdEncoding.EncodeToString([]byte("preserved image")), nil
+	}
+
+	c, recorder, resp, info := newImageTestContext(
+		t,
+		`{"created":1710000000,"data":[{"url":"https://cdn.example/temporary.png"}]}`,
+		"application/json",
+		false,
+	)
+	info.Request = &dto.ImageRequest{ResponseFormat: "b64_json"}
+
+	usage, relayErr := OpenaiImageHandler(c, info, resp)
+	require.Nil(t, relayErr)
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), `"b64_json":"cHJlc2VydmVkIGltYWdl"`)
+	require.NotContains(t, recorder.Body.String(), `"url"`)
 }
 
 func newImageTestContext(t *testing.T, body, contentType string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {

@@ -155,7 +155,9 @@ function ImagePreview({ image, alt, compact = false }: ImagePreviewProps) {
       ) : (
         <div className='bg-muted text-muted-foreground flex aspect-square items-center justify-center rounded-md p-4 text-center text-sm'>
           {hasSource
-            ? t('Image URL expired or the upstream provider returned 404')
+            ? t(
+                'Image could not be loaded because the upstream link is unavailable, expired, blocked by cross-origin policy, or returned an error'
+              )
             : t('No image data returned')}
         </div>
       )}
@@ -366,7 +368,7 @@ export function ImageGeneration() {
       model: values.model.trim(),
       prompt: values.prompt.trim(),
       n: values.n,
-      response_format: 'url',
+      response_format: 'b64_json',
     }
     if (values.size !== 'auto') request.size = values.size
     if (values.quality !== 'auto') request.quality = values.quality
