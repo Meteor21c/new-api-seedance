@@ -111,6 +111,30 @@ export async function getVideoTask(taskId: string): Promise<VideoTaskResponse> {
   return response.data
 }
 
+/**
+ * Load completed video bytes through the authenticated New API proxy.
+ *
+ * A native <video src="..."> request cannot attach the dashboard Bearer
+ * token, so the generation page must fetch the protected content with the
+ * configured API client and hand the player a local object URL instead.
+ */
+export async function getVideoContent(
+  taskId: string,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const response = await api.get<Blob>(
+    `/v1/videos/${encodeURIComponent(taskId)}/content`,
+    {
+      responseType: 'blob',
+      signal,
+      disableDuplicate: true,
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  return response.data
+}
+
 export async function getVideoTasks(): Promise<VideoTaskListResponse> {
   const response = await api.get<VideoTaskListResponse>(
     '/api/task/self?p=1&page_size=12&platform=59',

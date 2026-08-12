@@ -55,13 +55,16 @@ Kling 的请求会转换为文档规定的字段：`kling-v3` 使用 `model_name
 | `/mcp/video` | `meteor-video` | 视频专用分组 | `create_video`、`get_video`、`create_material_upload` |
 | `/mcp` | 旧版兼容入口 | 取决于令牌分组 | 全部媒体工具 |
 
-网页图片和视频生成页继续使用原有网页接口，不会改走 MCP。图片 MCP 会要求上游返回 `b64_json`，本地客户端应把 `data[].b64_json` 解码并保存成图片文件，因此不依赖短时效的上游图片地址。
+网页图片和视频生成页继续使用原有网页接口，不会改走 MCP。图片 MCP 会要求上游返回 `b64_json`，但会在服务端把结果转换为 MCP 标准的原生图片内容；Codex 和 Claude 可以直接显示图片，不依赖短时效的上游图片地址，也不需要客户编写 Base64 解码脚本。
 
 ## 网页使用
 
 登录后打开 `/video`。页面支持公网 HTTP/HTTPS 素材地址，也支持选择 JPG、PNG、WEBP 本地图片。文件由浏览器直传临时 OSS，New API 不代理文件字节；未配置临时 OSS 时仍可只填写公网 URL。
 
-任务成功后，页面直接使用上游签名视频地址播放。该地址默认 24 小时过期，应及时保存。
+任务成功后，New API 会返回与当前用户和任务绑定的 24 小时签名内容地址，页面
+直接用该地址播放。上游地址和 New API 用户令牌都不会暴露在链接中；客户也可把
+同一地址交给浏览器、播放器、Codex、Claude 或下载器打开。最近任务和签名地址
+均按 24 小时设计，应在期限内打开或保存成品。
 
 ## Codex
 
@@ -97,7 +100,7 @@ bearer_token_env_var = "METEOR_VIDEO_TOKEN"
 tool_timeout_sec = 60
 ```
 
-重启 Codex 后，`meteor-image` 只会出现 `create_image`，`meteor-video` 只会出现 `create_video`、`get_video` 和 `create_material_upload`。调用图片工具后，把返回的 `data[].b64_json` 解码并保存为 PNG、JPEG 或 WEBP 文件；不需要 `OPENAI_API_KEY`，也不需要直接调用 `/v1/images/generations`。
+重启 Codex 后，`meteor-image` 只会出现 `create_image`，`meteor-video` 只会出现 `create_video`、`get_video` 和 `create_material_upload`。`create_image` 会直接返回 MCP 原生图片，客户端可以展示，并可按客户端能力保存或导出到本地；不需要 `OPENAI_API_KEY`，也不需要直接调用 `/v1/images/generations`。
 
 ## Claude Code
 
@@ -139,7 +142,9 @@ claude mcp add --transport http meteor-video \
 
 1. 调用 `create_video`，保存返回的 `task_id`。
 2. 每隔数秒调用 `get_video`。
-3. `status` 为 `SUCCESS` 时读取 `data.result_url`。
+3. `status` 为 `SUCCESS` 时读取 `data.result_url`。该地址是与用户和任务绑定的
+   24 小时签名链接，可直接交给浏览器、Codex、Claude 或下载器打开，无需把
+   New API 用户令牌拼进地址；签名过期或被篡改时会自动失效。
 4. `status` 为 `FAILURE` 时读取 `data.fail_reason`。
 
 ## 镜像

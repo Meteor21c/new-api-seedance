@@ -415,7 +415,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 				taskResp = service.TaskErrorWrapper(err, "convert_to_openai_video_failed", http.StatusInternalServerError)
 				return
 			}
-			respBody = openAIVideoData
+			respBody = replaceOpenAIVideoResultURL(openAIVideoData, originTask)
 			return
 		}
 		taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("not_implemented:%s", originTask.Platform), "not_implemented", http.StatusNotImplemented)
@@ -425,12 +425,52 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	// 通用 TaskDto 格式
 	respBody, err = common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
-		Data: TaskModel2Dto(originTask),
+		Data: videoTaskModel2Dto(originTask),
 	})
 	if err != nil {
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 	}
 	return
+}
+
+// videoTaskModel2Dto makes a completed video result portable to browsers,
+// media players, Codex, and Claude. The URL contains a task-bound short-lived
+// signature instead of a reusable New API key.
+func videoTaskModel2Dto(task *model.Task) *dto.TaskDto {
+	result := TaskModel2Dto(task)
+	if task.Status != model.TaskStatusSuccess {
+		return result
+	}
+	signedURL, err := service.BuildSignedVideoContentURL(task.TaskID, task.UserId)
+	if err == nil {
+		result.ResultURL = signedURL
+	}
+	return result
+}
+
+func replaceOpenAIVideoResultURL(raw []byte, task *model.Task) []byte {
+	if task.Status != model.TaskStatusSuccess {
+		return raw
+	}
+	signedURL, err := service.BuildSignedVideoContentURL(task.TaskID, task.UserId)
+	if err != nil {
+		return raw
+	}
+	var response map[string]any
+	if err = common.Unmarshal(raw, &response); err != nil {
+		return raw
+	}
+	metadata, _ := response["metadata"].(map[string]any)
+	if metadata == nil {
+		metadata = make(map[string]any)
+		response["metadata"] = metadata
+	}
+	metadata["url"] = signedURL
+	rewritten, err := common.Marshal(response)
+	if err != nil {
+		return raw
+	}
+	return rewritten
 }
 
 // tryRealtimeFetch 尝试从上游实时拉取 Gemini/Vertex 任务状态。
@@ -509,6 +549,11 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		"status":   mapTaskStatusToSimple(task.Status),
 		"task_id":  task.TaskID,
 		"url":      task.GetResultURL(),
+	}
+	if task.Status == model.TaskStatusSuccess {
+		if signedURL, signedErr := service.BuildSignedVideoContentURL(task.TaskID, task.UserId); signedErr == nil {
+			out["url"] = signedURL
+		}
 	}
 	respBody, _ := common.Marshal(dto.TaskResponse[any]{
 		Code: "success",

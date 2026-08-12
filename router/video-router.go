@@ -8,6 +8,17 @@ import (
 )
 
 func SetVideoRouter(router *gin.Engine) {
+	// Public playback route authenticated by a short-lived task-bound token.
+	// It exists for MCP/API clients that cannot attach Authorization headers to
+	// a browser, media player, or download URL.
+	signedVideoProxyRouter := router.Group("/v1")
+	signedVideoProxyRouter.Use(middleware.RouteTag("relay"))
+	signedVideoProxyRouter.Use(middleware.SystemPerformanceCheck())
+	{
+		signedVideoProxyRouter.GET("/videos/:task_id/content/:access_token", controller.SignedVideoProxy)
+		signedVideoProxyRouter.HEAD("/videos/:task_id/content/:access_token", controller.SignedVideoProxy)
+	}
+
 	videoPlaygroundRouter := router.Group("/pg/video")
 	videoPlaygroundRouter.Use(middleware.RouteTag("relay"))
 	videoPlaygroundRouter.Use(middleware.SystemPerformanceCheck())
@@ -26,6 +37,7 @@ func SetVideoRouter(router *gin.Engine) {
 	videoProxyRouter.Use(middleware.TokenOrUserAuth())
 	{
 		videoProxyRouter.GET("/videos/:task_id/content", controller.VideoProxy)
+		videoProxyRouter.HEAD("/videos/:task_id/content", controller.VideoProxy)
 	}
 
 	videoV1Router := router.Group("/v1")

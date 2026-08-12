@@ -71,6 +71,7 @@ import {
 } from '../generation-storage'
 import {
   createVideoTracked,
+  getVideoContent,
   getVideoModels,
   getVideoTask,
   getVideoTasks,
@@ -456,9 +457,68 @@ function buildMcpPrompt(
   ].join('\n')
 }
 
+function useAuthenticatedVideoURL(task: VideoTask) {
+  const [retryKey, setRetryKey] = useState(0)
+  const [state, setState] = useState<{
+    taskId: string
+    url: string
+    loading: boolean
+    error: string
+  }>({ taskId: '', url: '', loading: false, error: '' })
+
+  useEffect(() => {
+    if (task.status !== 'SUCCESS' || !task.task_id) {
+      setState({ taskId: task.task_id, url: '', loading: false, error: '' })
+      return
+    }
+
+    const controller = new AbortController()
+    let objectURL = ''
+    setState({ taskId: task.task_id, url: '', loading: true, error: '' })
+
+    void getVideoContent(task.task_id, controller.signal)
+      .then((blob) => {
+        if (controller.signal.aborted) return
+        if (!blob.size) throw new Error('The video response was empty')
+        objectURL = URL.createObjectURL(blob)
+        setState({
+          taskId: task.task_id,
+          url: objectURL,
+          loading: false,
+          error: '',
+        })
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        setState({
+          taskId: task.task_id,
+          url: '',
+          loading: false,
+          error: errorMessage(error),
+        })
+      })
+
+    return () => {
+      controller.abort()
+      if (objectURL) URL.revokeObjectURL(objectURL)
+    }
+  }, [retryKey, task.status, task.task_id])
+
+  const currentState =
+    state.taskId === task.task_id
+      ? state
+      : { taskId: task.task_id, url: '', loading: true, error: '' }
+
+  return {
+    ...currentState,
+    retry: () => setRetryKey((value) => value + 1),
+  }
+}
+
 function VideoResult({ task }: { task: VideoTask }) {
   const { t } = useTranslation()
   const failureHint = upstreamFailureHint(task.fail_reason || '')
+  const video = useAuthenticatedVideoURL(task)
 
   return (
     <div className='space-y-4'>
@@ -478,19 +538,47 @@ function VideoResult({ task }: { task: VideoTask }) {
         <Progress value={progressValue(task.progress)} />
       )}
 
-      {task.status === 'SUCCESS' && task.result_url && (
+      {task.status === 'SUCCESS' && video.loading && (
+        <div className='text-muted-foreground flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-lg bg-black/90 text-center'>
+          <LoaderCircle className='size-8 animate-spin' />
+          <span className='text-sm'>{t('Loading video content')}</span>
+        </div>
+      )}
+
+      {task.status === 'SUCCESS' && video.error && (
+        <Alert variant='destructive'>
+          <AlertTitle>{t('Video content could not be loaded')}</AlertTitle>
+          <AlertDescription>
+            <span className='block'>
+              {video.error ||
+                t(
+                  'The task succeeded, but the authenticated video content request failed'
+                )}
+            </span>
+            <Button
+              className='mt-3'
+              size='sm'
+              type='button'
+              variant='outline'
+              onClick={video.retry}
+            >
+              {t('Retry')}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {task.status === 'SUCCESS' && video.url && (
         <>
           <video
             className='aspect-video w-full rounded-lg bg-black object-contain'
-            src={task.result_url}
+            src={video.url}
             controls
             preload='metadata'
           />
           <Button
             variant='outline'
-            render={
-              <a href={task.result_url} target='_blank' rel='noreferrer' />
-            }
+            render={<a href={video.url} target='_blank' rel='noreferrer' />}
           >
             <ExternalLink />
             {t('Open video')}
@@ -1470,16 +1558,13 @@ export function VideoGeneration() {
                             className='flex-1'
                             size='sm'
                             variant='outline'
-                            render={
-                              <a
-                                href={task.result_url}
-                                target='_blank'
-                                rel='noreferrer'
-                              />
-                            }
+                            onClick={() => {
+                              setRestoredTask(task)
+                              setCurrentTaskId(task.task_id)
+                            }}
                           >
                             <ExternalLink />
-                            {t('Open')}
+                            {t('Load video')}
                           </Button>
                         )}
                       </div>

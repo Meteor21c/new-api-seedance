@@ -127,7 +127,7 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 		assert.Contains(t, string(requestBody), `"model":"gpt-image-1"`)
 		assert.Contains(t, string(requestBody), `"response_format":"b64_json"`)
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"created":1,"data":[{"b64_json":"aW1hZ2U="}]}`))
+		_, _ = writer.Write([]byte(`{"created":1,"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}]}`))
 	})
 
 	context, recorder := newMCPTestContext(
@@ -136,8 +136,32 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 	MCPImage(context)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), `"b64_json":"aW1hZ2U="`)
+	assert.Contains(t, recorder.Body.String(), `"type":"image"`)
+	assert.Contains(t, recorder.Body.String(), `"mimeType":"image/png"`)
+	assert.Contains(t, recorder.Body.String(), `"data":"iVBORw0KGgo`)
+	assert.NotContains(t, recorder.Body.String(), `"b64_json"`)
 	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
+}
+
+func TestMCPCreateImageRejectsMissingBase64Data(t *testing.T) {
+	originalHandler := mcpInternalHandler
+	t.Cleanup(func() {
+		mcpInternalHandler = originalHandler
+	})
+
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"created":1,"data":[{"url":"https://example.com/temporary.png"}]}`))
+	})
+
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-1","prompt":"A sunrise"}}}`,
+	)
+	MCPImage(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `image provider returned invalid data[].b64_json`)
+	assert.Contains(t, recorder.Body.String(), `"isError":true`)
 }
 
 func TestMCPCreateVideoCallsInternalAPI(t *testing.T) {

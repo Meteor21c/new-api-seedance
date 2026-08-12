@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,8 +62,10 @@ type mcpCallToolParams struct {
 }
 
 type mcpContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 type mcpToolResult struct {
@@ -253,7 +256,110 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	if quality := strings.TrimSpace(args.Quality); quality != "" && quality != "auto" {
 		payload["quality"] = quality
 	}
-	return callInternalAPI(c, http.MethodPost, "/v1/images/generations", payload)
+	result := callInternalAPI(c, http.MethodPost, "/v1/images/generations", payload)
+	if result.IsError {
+		return result
+	}
+	return newMCPImageResult(result.StructuredContent)
+}
+
+func newMCPImageResult(structured map[string]any) mcpToolResult {
+	responseData, ok := structured["data"].([]any)
+	if !ok || len(responseData) == 0 {
+		return newMCPToolError("image provider did not return data[].b64_json")
+	}
+
+	contents := []mcpContent{
+		{
+			Type: "text",
+			Text: "Image generation succeeded. The generated images are attached as native MCP image content.",
+		},
+	}
+	imageMetadata := make([]map[string]any, 0, len(responseData))
+	for _, rawItem := range responseData {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		encoded, ok := item["b64_json"].(string)
+		if !ok {
+			continue
+		}
+		imageData, mimeType, ok := normalizeMCPImageData(encoded)
+		if !ok {
+			continue
+		}
+		contents = append(contents, mcpContent{
+			Type:     "image",
+			Data:     imageData,
+			MimeType: mimeType,
+		})
+		metadata := map[string]any{
+			"index":     len(imageMetadata),
+			"mime_type": mimeType,
+		}
+		if revisedPrompt, ok := item["revised_prompt"].(string); ok && strings.TrimSpace(revisedPrompt) != "" {
+			metadata["revised_prompt"] = revisedPrompt
+		}
+		imageMetadata = append(imageMetadata, metadata)
+	}
+	if len(imageMetadata) == 0 {
+		return newMCPToolError("image provider returned invalid data[].b64_json")
+	}
+
+	compact := map[string]any{
+		"count":  len(imageMetadata),
+		"images": imageMetadata,
+	}
+	if created, ok := structured["created"]; ok {
+		compact["created"] = created
+	}
+	return mcpToolResult{
+		Content:           contents,
+		StructuredContent: compact,
+	}
+}
+
+func normalizeMCPImageData(encoded string) (string, string, bool) {
+	imageData := strings.TrimSpace(encoded)
+	mimeType := ""
+	if strings.HasPrefix(strings.ToLower(imageData), "data:") {
+		comma := strings.IndexByte(imageData, ',')
+		if comma <= len("data:") {
+			return "", "", false
+		}
+		header := imageData[len("data:"):comma]
+		if semicolon := strings.IndexByte(header, ';'); semicolon >= 0 {
+			header = header[:semicolon]
+		}
+		if strings.HasPrefix(strings.ToLower(header), "image/") {
+			mimeType = strings.ToLower(header)
+		}
+		imageData = strings.TrimSpace(imageData[comma+1:])
+	}
+	if imageData == "" {
+		return "", "", false
+	}
+
+	prefixLength := len(imageData)
+	if prefixLength > 256 {
+		prefixLength = 256
+	}
+	prefixLength -= prefixLength % 4
+	if prefixLength == 0 {
+		return "", "", false
+	}
+	sample, err := base64.StdEncoding.DecodeString(imageData[:prefixLength])
+	if err != nil || len(sample) == 0 {
+		return "", "", false
+	}
+	if detected := http.DetectContentType(sample); strings.HasPrefix(detected, "image/") {
+		mimeType = detected
+	}
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return imageData, mimeType, true
 }
 
 func callCreateVideoTool(c *gin.Context, arguments map[string]any) mcpToolResult {
@@ -415,7 +521,7 @@ func mediaMCPTools() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "create_image",
-			Description: "Generate images synchronously through a configured OpenAI-compatible image model.",
+			Description: "Generate images synchronously through a configured OpenAI-compatible image model. Generated files are returned as native MCP image content that Codex and Claude can display directly.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -532,11 +638,11 @@ func mcpServerNameForProfile(profile mcpToolProfile) string {
 func mcpInstructionsForProfile(profile mcpToolProfile) string {
 	switch profile {
 	case mcpToolProfileImage:
-		return "Use create_image with the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group. Decode data[].b64_json and save it as a local image file before replying."
+		return "Use create_image with the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group. Generated files are returned as native MCP image content; display them directly and save or export them locally when requested. Do not ask for OPENAI_API_KEY."
 	case mcpToolProfileVideo:
 		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	default:
-		return "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation and create_video for asynchronous video generation, including Seedance and Kling V3. Use a New API user token whose group can route to the requested media model. For a local video reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
+		return "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation; its files are returned as native MCP image content. Use create_video for asynchronous Seedance and Kling V3 generation. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For a local video reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	}
 }
 
