@@ -47,6 +47,43 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"create_material_upload"`)
 }
 
+func TestMCPImageOnlyListsAndCallsImageTool(t *testing.T) {
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":"tools","method":"tools/list","params":{}}`,
+	)
+
+	MCPImage(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"create_image"`)
+	assert.NotContains(t, recorder.Body.String(), `"create_video"`)
+	assert.NotContains(t, recorder.Body.String(), `"get_video"`)
+	assert.NotContains(t, recorder.Body.String(), `"create_material_upload"`)
+
+	context, recorder = newMCPTestContext(
+		`{"jsonrpc":"2.0","id":"call","method":"tools/call","params":{"name":"create_video","arguments":{"prompt":"A sunrise"}}}`,
+	)
+	MCPImage(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"code":-32602`)
+	assert.Contains(t, recorder.Body.String(), `tool is not available on this MCP endpoint`)
+}
+
+func TestMCPVideoOnlyListsVideoTools(t *testing.T) {
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":"tools","method":"tools/list","params":{}}`,
+	)
+
+	MCPVideo(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.NotContains(t, recorder.Body.String(), `"create_image"`)
+	assert.Contains(t, recorder.Body.String(), `"create_video"`)
+	assert.Contains(t, recorder.Body.String(), `"get_video"`)
+	assert.Contains(t, recorder.Body.String(), `"create_material_upload"`)
+}
+
 func TestMCPCreateMaterialUploadCallsInternalAPI(t *testing.T) {
 	originalHandler := mcpInternalHandler
 	t.Cleanup(func() {
@@ -88,18 +125,18 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 		requestBody, err := io.ReadAll(request.Body)
 		require.NoError(t, err)
 		assert.Contains(t, string(requestBody), `"model":"gpt-image-1"`)
-		assert.Contains(t, string(requestBody), `"response_format":"url"`)
+		assert.Contains(t, string(requestBody), `"response_format":"b64_json"`)
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"created":1,"data":[{"url":"https://example.com/image.png"}]}`))
+		_, _ = writer.Write([]byte(`{"created":1,"data":[{"b64_json":"aW1hZ2U="}]}`))
 	})
 
 	context, recorder := newMCPTestContext(
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-1","prompt":"A sunrise"}}}`,
 	)
-	MCP(context)
+	MCPImage(context)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), `"https://example.com/image.png"`)
+	assert.Contains(t, recorder.Body.String(), `"b64_json":"aW1hZ2U="`)
 	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
 }
 

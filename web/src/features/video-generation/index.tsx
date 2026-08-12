@@ -371,9 +371,9 @@ function splitReferenceUrls(raw: string): string[] {
 
 function mcpEndpoint(): string {
   if (typeof window !== 'undefined' && window.location.origin) {
-    return `${window.location.origin}/mcp`
+    return `${window.location.origin}/mcp/video`
   }
-  return 'https://api.meteor21c.fun/mcp'
+  return 'https://api.meteor21c.fun/mcp/video'
 }
 
 function buildMcpPrompt(
@@ -440,7 +440,7 @@ function buildMcpPrompt(
     '',
     '你是 MCP 视频生成执行器。',
     '',
-    '1. 仅使用当前客户端的 meteor-video MCP；若尚未配置或鉴权失败，用上述服务地址和令牌完成配置后再继续。',
+    '1. 仅使用当前客户端的 meteor-video MCP；不得改用 meteor-image。若尚未配置或鉴权失败，用上述服务地址和令牌完成配置后再继续。',
     '2. 仅在当前会话中使用和记住令牌，不得把令牌写入项目代码、日志或最终回复。',
     '3. 先确认以下工具可用：create_video、get_video、create_material_upload。',
     '4. 如果提示词为空，只向用户索要提示词，不得猜测或提交。',

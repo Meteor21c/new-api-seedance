@@ -45,6 +45,18 @@ Kling 的请求会转换为文档规定的字段：`kling-v3` 使用 `model_name
 
 网页和 MCP 使用渠道中配置的对外模型名；如果渠道设置了模型映射，调用时应传映射前的渠道模型名，不要把文档中的 `cheap-*` 示例名硬编码到客户端。
 
+## MCP 入口
+
+定制版在同一个 New API 进程中提供三个远程 MCP 入口，不需要额外部署服务：
+
+| 入口 | 客户端名称 | 令牌分组 | 可用工具 |
+| --- | --- | --- | --- |
+| `/mcp/image` | `meteor-image` | 绘图专用分组 | `create_image` |
+| `/mcp/video` | `meteor-video` | 视频专用分组 | `create_video`、`get_video`、`create_material_upload` |
+| `/mcp` | 旧版兼容入口 | 取决于令牌分组 | 全部媒体工具 |
+
+网页图片和视频生成页继续使用原有网页接口，不会改走 MCP。图片 MCP 会要求上游返回 `b64_json`，本地客户端应把 `data[].b64_json` 解码并保存成图片文件，因此不依赖短时效的上游图片地址。
+
 ## 网页使用
 
 登录后打开 `/video`。页面支持公网 HTTP/HTTPS 素材地址，也支持选择 JPG、PNG、WEBP 本地图片。文件由浏览器直传临时 OSS，New API 不代理文件字节；未配置临时 OSS 时仍可只填写公网 URL。
@@ -53,12 +65,20 @@ Kling 的请求会转换为文档规定的字段：`kling-v3` 使用 `model_name
 
 ## Codex
 
-把用户自己的 New API 令牌写入本地环境变量，并用 Codex CLI 注册远程 MCP：
+分别创建“绘图专用分组”和“视频专用分组”的 New API 用户令牌，再用 Codex CLI 注册两个远程 MCP。不要使用上游渠道密钥：
 
 ```bash
+export METEOR_IMAGE_TOKEN='sk-绘图专用分组令牌'
 export METEOR_VIDEO_TOKEN='sk-用户自己的令牌'
+
+codex mcp remove meteor-image >/dev/null 2>&1 || true
+codex mcp remove meteor-video >/dev/null 2>&1 || true
+
+codex mcp add meteor-image \
+  --url https://api.meteor21c.fun/mcp/image \
+  --bearer-token-env-var METEOR_IMAGE_TOKEN
 codex mcp add meteor-video \
-  --url https://api.meteor21c.fun/mcp \
+  --url https://api.meteor21c.fun/mcp/video \
   --bearer-token-env-var METEOR_VIDEO_TOKEN
 codex mcp list
 ```
@@ -66,20 +86,29 @@ codex mcp list
 也可以手动在 `~/.codex/config.toml` 中加入：
 
 ```toml
+[mcp_servers.meteor_image]
+url = "https://api.meteor21c.fun/mcp/image"
+bearer_token_env_var = "METEOR_IMAGE_TOKEN"
+tool_timeout_sec = 300
+
 [mcp_servers.meteor_video]
-url = "https://api.meteor21c.fun/mcp"
+url = "https://api.meteor21c.fun/mcp/video"
 bearer_token_env_var = "METEOR_VIDEO_TOKEN"
 tool_timeout_sec = 60
 ```
 
-重启 Codex 后会出现 `create_video`、`get_video`、`create_material_upload` 和 `create_image` 工具。
+重启 Codex 后，`meteor-image` 只会出现 `create_image`，`meteor-video` 只会出现 `create_video`、`get_video` 和 `create_material_upload`。调用图片工具后，把返回的 `data[].b64_json` 解码并保存为 PNG、JPEG 或 WEBP 文件；不需要 `OPENAI_API_KEY`，也不需要直接调用 `/v1/images/generations`。
 
 ## Claude Code
 
 ```bash
+export METEOR_IMAGE_TOKEN='sk-绘图专用分组令牌'
 export METEOR_VIDEO_TOKEN='sk-用户自己的令牌'
+claude mcp add --transport http meteor-image \
+  https://api.meteor21c.fun/mcp/image \
+  --header "Authorization: Bearer ${METEOR_IMAGE_TOKEN}"
 claude mcp add --transport http meteor-video \
-  https://api.meteor21c.fun/mcp \
+  https://api.meteor21c.fun/mcp/video \
   --header "Authorization: Bearer ${METEOR_VIDEO_TOKEN}"
 ```
 
@@ -88,9 +117,16 @@ claude mcp add --transport http meteor-video \
 ```json
 {
   "mcpServers": {
+    "meteor-image": {
+      "type": "http",
+      "url": "https://api.meteor21c.fun/mcp/image",
+      "headers": {
+        "Authorization": "Bearer ${METEOR_IMAGE_TOKEN}"
+      }
+    },
     "meteor-video": {
       "type": "http",
-      "url": "https://api.meteor21c.fun/mcp",
+      "url": "https://api.meteor21c.fun/mcp/video",
       "headers": {
         "Authorization": "Bearer ${METEOR_VIDEO_TOKEN}"
       }

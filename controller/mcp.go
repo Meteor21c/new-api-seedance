@@ -17,6 +17,15 @@ import (
 const (
 	mcpProtocolVersion = "2025-06-18"
 	mcpServerName      = "new-api-video"
+	mcpImageServerName = "new-api-image"
+)
+
+type mcpToolProfile string
+
+const (
+	mcpToolProfileAll   mcpToolProfile = "all"
+	mcpToolProfileImage mcpToolProfile = "image"
+	mcpToolProfileVideo mcpToolProfile = "video"
 )
 
 var mcpInternalHandler http.Handler
@@ -101,6 +110,18 @@ func SetMCPInternalHandler(handler http.Handler) {
 }
 
 func MCP(c *gin.Context) {
+	handleMCP(c, mcpToolProfileAll)
+}
+
+func MCPImage(c *gin.Context) {
+	handleMCP(c, mcpToolProfileImage)
+}
+
+func MCPVideo(c *gin.Context) {
+	handleMCP(c, mcpToolProfileVideo)
+}
+
+func handleMCP(c *gin.Context, profile mcpToolProfile) {
 	var request mcpRequest
 	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
 		writeMCPError(c, nil, -32700, "invalid JSON-RPC request")
@@ -126,25 +147,25 @@ func MCP(c *gin.Context) {
 				},
 			},
 			"serverInfo": map[string]any{
-				"name":    mcpServerName,
+				"name":    mcpServerNameForProfile(profile),
 				"version": common.Version,
 			},
-			"instructions": "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation and create_video for asynchronous video generation, including Seedance and Kling V3. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE.",
+			"instructions": mcpInstructionsForProfile(profile),
 		})
 	case "ping":
 		writeMCPResult(c, request.ID, map[string]any{})
 	case "tools/list":
 		writeMCPResult(c, request.ID, map[string]any{
-			"tools": mediaMCPTools(),
+			"tools": mcpToolsForProfile(profile),
 		})
 	case "tools/call":
-		handleMCPToolCall(c, request)
+		handleMCPToolCall(c, request, profile)
 	default:
 		writeMCPError(c, request.ID, -32601, "method not found")
 	}
 }
 
-func handleMCPToolCall(c *gin.Context, request mcpRequest) {
+func handleMCPToolCall(c *gin.Context, request mcpRequest, profile mcpToolProfile) {
 	paramsBytes, err := common.Marshal(request.Params)
 	if err != nil {
 		writeMCPError(c, request.ID, -32602, "invalid tool parameters")
@@ -153,6 +174,10 @@ func handleMCPToolCall(c *gin.Context, request mcpRequest) {
 	var params mcpCallToolParams
 	if err := common.Unmarshal(paramsBytes, &params); err != nil {
 		writeMCPError(c, request.ID, -32602, "invalid tool parameters")
+		return
+	}
+	if !mcpToolAllowed(profile, params.Name) {
+		writeMCPError(c, request.ID, -32602, "tool is not available on this MCP endpoint")
 		return
 	}
 
@@ -220,7 +245,7 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 		"model":           args.Model,
 		"prompt":          args.Prompt,
 		"n":               args.N,
-		"response_format": "url",
+		"response_format": "b64_json",
 	}
 	if size := strings.TrimSpace(args.Size); size != "" && size != "auto" {
 		payload["size"] = size
@@ -494,5 +519,48 @@ func mediaMCPTools() []mcpTool {
 				"additionalProperties": false,
 			},
 		},
+	}
+}
+
+func mcpServerNameForProfile(profile mcpToolProfile) string {
+	if profile == mcpToolProfileImage {
+		return mcpImageServerName
+	}
+	return mcpServerName
+}
+
+func mcpInstructionsForProfile(profile mcpToolProfile) string {
+	switch profile {
+	case mcpToolProfileImage:
+		return "Use create_image with the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group. Decode data[].b64_json and save it as a local image file before replying."
+	case mcpToolProfileVideo:
+		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
+	default:
+		return "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation and create_video for asynchronous video generation, including Seedance and Kling V3. Use a New API user token whose group can route to the requested media model. For a local video reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
+	}
+}
+
+func mcpToolsForProfile(profile mcpToolProfile) []mcpTool {
+	tools := mediaMCPTools()
+	if profile == mcpToolProfileAll {
+		return tools
+	}
+	filtered := make([]mcpTool, 0, len(tools))
+	for _, tool := range tools {
+		if mcpToolAllowed(profile, tool.Name) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+func mcpToolAllowed(profile mcpToolProfile, name string) bool {
+	switch profile {
+	case mcpToolProfileImage:
+		return name == "create_image"
+	case mcpToolProfileVideo:
+		return name == "create_video" || name == "get_video" || name == "create_material_upload"
+	default:
+		return name == "create_image" || name == "create_video" || name == "get_video" || name == "create_material_upload"
 	}
 }
