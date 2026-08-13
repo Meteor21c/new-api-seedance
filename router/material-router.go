@@ -14,6 +14,7 @@ func SetMaterialRouter(router *gin.Engine) {
 	{
 		publicRouter.GET("/content/:material_id/:file_name", controller.MaterialContent)
 		publicRouter.HEAD("/content/:material_id/:file_name", controller.MaterialContent)
+		publicRouter.OPTIONS("/content/:material_id/:file_name", controller.MaterialContent)
 	}
 
 	playgroundRouter := router.Group("/pg/materials")

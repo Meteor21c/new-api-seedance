@@ -22,6 +22,14 @@ func TestMaterialPublicContentRoutes(t *testing.T) {
 	}
 	require.True(t, methods[http.MethodGet])
 	require.True(t, methods[http.MethodHead])
+	require.True(t, methods[http.MethodOptions])
+
+	optionsRequest := httptest.NewRequest(http.MethodOptions, "/v1/materials/content/material/file.png", nil)
+	optionsRecorder := httptest.NewRecorder()
+	engine.ServeHTTP(optionsRecorder, optionsRequest)
+	require.Equal(t, http.StatusNoContent, optionsRecorder.Code)
+	require.Equal(t, "*", optionsRecorder.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "cross-origin", optionsRecorder.Header().Get("Cross-Origin-Resource-Policy"))
 
 	request := httptest.NewRequest(http.MethodGet, "/v1/materials/content/invalid/material.png", nil)
 	recorder := httptest.NewRecorder()

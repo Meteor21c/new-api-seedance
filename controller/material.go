@@ -37,6 +37,11 @@ func CreateMaterialUpload(c *gin.Context) {
 // providers. Authentication is carried by the opaque material_id in the path;
 // the OSS bucket itself remains private.
 func MaterialContent(c *gin.Context) {
+	writeMaterialCORSHeaders(c)
+	if c.Request.Method == http.MethodOptions {
+		c.Status(http.StatusNoContent)
+		return
+	}
 	materialID := c.Param("material_id")
 	fileName := c.Param("file_name")
 	if materialID == "" || fileName == "" {
@@ -72,6 +77,15 @@ func MaterialContent(c *gin.Context) {
 		object.Body,
 		map[string]string{"Content-Disposition": fmt.Sprintf("inline; filename=%q", object.FileName)},
 	)
+}
+
+func writeMaterialCORSHeaders(c *gin.Context) {
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Range, Content-Type")
+	c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type, Content-Disposition")
+	c.Header("Cross-Origin-Resource-Policy", "cross-origin")
+	c.Header("Referrer-Policy", "no-referrer")
 }
 
 func writeMaterialHeaders(c *gin.Context, metadata *service.MaterialObjectMetadata) {
