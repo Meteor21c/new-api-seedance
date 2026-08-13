@@ -11,6 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var presignGeneratedImageObject = service.PresignGeneratedImageObject
+
 func CreateMaterialUpload(c *gin.Context) {
 	var request service.MaterialUploadRequest
 	if err := common.UnmarshalBodyReusable(c, &request); err != nil {
@@ -58,6 +60,17 @@ func MaterialContent(c *gin.Context) {
 		}
 		writeMaterialHeaders(c, metadata)
 		c.Status(http.StatusOK)
+		return
+	}
+
+	// Generated results are read by browsers and Codex clients, not by image
+	// providers that require signature validation through this process. Redirect
+	// them to OSS so application CPU, memory, bandwidth, and open connections
+	// stay low. If presigning is temporarily unavailable, retain the reliable
+	// streaming fallback below.
+	if redirect, err := presignGeneratedImageObject(c.Request.Context(), materialID, fileName); err == nil && redirect != nil && redirect.URL != "" {
+		c.Header("Cache-Control", "private, no-store")
+		c.Redirect(http.StatusFound, redirect.URL)
 		return
 	}
 

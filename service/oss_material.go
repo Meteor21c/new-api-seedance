@@ -76,6 +76,11 @@ type GeneratedImageAsset struct {
 	MimeType  string `json:"mime_type"`
 }
 
+type GeneratedImageRedirect struct {
+	URL string
+	MaterialObjectMetadata
+}
+
 type materialToken struct {
 	Version     int    `json:"v"`
 	UserID      int    `json:"user_id"`
@@ -308,10 +313,11 @@ func OpenMaterialObjectForUser(ctx context.Context, userID int, materialID strin
 
 // StoreGeneratedImage keeps a generated original in private OSS and returns a
 // short, opaque New API delivery URL when a public base URL is configured. The
-// delivery handler streams the object and never buffers the complete file in
-// application memory. A direct OSS signed URL remains the fallback for content
-// types that the delivery route cannot serve. The existing temp-materials
-// lifecycle rule cleans the object asynchronously.
+// delivery handler redirects browser/Codex downloads to a brief OSS signature,
+// with the previous application stream retained as a reliability fallback. A
+// direct OSS signed URL remains the fallback when a public base URL is not
+// configured. The existing temp-materials lifecycle rule cleans the object
+// asynchronously.
 func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeType string) (*GeneratedImageAsset, error) {
 	if userID <= 0 {
 		return nil, errors.New("authenticated user is required")
@@ -379,6 +385,49 @@ func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeTy
 		URL:       result.URL,
 		ExpiresAt: result.Expiration.Unix(),
 		MimeType:  mimeType,
+	}, nil
+}
+
+// PresignGeneratedImageObject turns the short application delivery URL into a
+// brief direct OSS download. Only server-generated objects are eligible; user
+// uploads keep the existing validated streaming behavior used by providers.
+// The signed material token already authenticates the object key, type, size,
+// owner, and outer expiry, so no image bytes pass through the application.
+func PresignGeneratedImageObject(ctx context.Context, materialID, requestedFileName string) (*GeneratedImageRedirect, error) {
+	cfg, token, client, err := prepareMaterialAccess(materialID, requestedFileName)
+	if err != nil {
+		return nil, err
+	}
+	generatedPrefix := cfg.Prefix + strconv.Itoa(token.UserID) + "/generated/"
+	if !strings.HasPrefix(token.ObjectKey, generatedPrefix) {
+		return nil, errors.New("material is not a generated image")
+	}
+	metadata, err := validateMaterialMetadata(token, token.SizeBytes, token.ContentType)
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := time.Until(time.Unix(token.ExpiresAt, 0))
+	if remaining <= 0 {
+		return nil, errors.New("material_id has expired")
+	}
+	presignTTL := 10 * time.Minute
+	if cfg.DownloadTTL < presignTTL {
+		presignTTL = cfg.DownloadTTL
+	}
+	if remaining < presignTTL {
+		presignTTL = remaining
+	}
+	result, err := client.Presign(ctx, &oss.GetObjectRequest{
+		Bucket: oss.Ptr(cfg.Bucket),
+		Key:    oss.Ptr(token.ObjectKey),
+	}, oss.PresignExpires(presignTTL))
+	if err != nil {
+		return nil, fmt.Errorf("create generated image redirect signature: %w", err)
+	}
+	return &GeneratedImageRedirect{
+		URL:                    result.URL,
+		MaterialObjectMetadata: *metadata,
 	}, nil
 }
 

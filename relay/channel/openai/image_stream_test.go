@@ -78,6 +78,64 @@ func TestInlineOpenAIImageURLsSkipsExistingBase64(t *testing.T) {
 	require.Equal(t, string(body), string(normalized))
 }
 
+func TestNormalizeOpenAIImageResponseEnvelope(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "nested result data with base64 alias",
+			body: `{"created":1,"result":{"data":[{"base64":"aW1hZ2U="}]}}`,
+			want: `"data":[{"b64_json":"aW1hZ2U="}]`,
+		},
+		{
+			name: "top-level images with URL alias",
+			body: `{"images":[{"image_url":"https://cdn.example/image.png"}]}`,
+			want: `"data":[{"url":"https://cdn.example/image.png"}]`,
+		},
+		{
+			name: "nested image_url object",
+			body: `{"output":{"images":[{"image_url":{"url":"https://cdn.example/image.png"}}]}}`,
+			want: `"data":[{"url":"https://cdn.example/image.png"}]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized := normalizeOpenAIImageResponseEnvelope([]byte(test.body))
+			require.Contains(t, string(normalized), test.want)
+			require.NotContains(t, string(normalized), `"result":`)
+			require.NotContains(t, string(normalized), `"output":`)
+			require.NotContains(t, string(normalized), `"images":`)
+		})
+	}
+}
+
+func TestOpenaiImageHandlerRejectsErrorWithoutType(t *testing.T) {
+	body := `{"error":{"message":"provider rejected the image"}}`
+	c, recorder, resp, info := newImageTestContext(t, body, "application/json", false)
+
+	usage, err := OpenaiImageHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	require.Equal(t, "provider rejected the image", err.ToOpenAIError().Message)
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestOpenaiImageHandlerRejectsEmptySuccessShape(t *testing.T) {
+	body := `{"created":1710000000,"status":"completed"}`
+	c, recorder, resp, info := newImageTestContext(t, body, "application/json", false)
+	info.Request = &dto.ImageRequest{ResponseFormat: "b64_json"}
+
+	usage, err := OpenaiImageHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	require.Contains(t, err.Error(), "supported image payload")
+	require.Empty(t, recorder.Body.String())
+}
+
 func TestImageRequestWantsBase64(t *testing.T) {
 	require.False(t, imageRequestWantsBase64(nil))
 	require.False(t, imageRequestWantsBase64(&relaycommon.RelayInfo{Request: &dto.ImageRequest{ResponseFormat: "url"}}))
@@ -411,10 +469,11 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 	longImage := strings.Repeat("a", 4096)
 
 	tests := []struct {
-		name      string
-		body      string
-		usePrice  bool
-		wantCount float64
+		name        string
+		body        string
+		usePrice    bool
+		wantCount   float64
+		wantFailure bool
 	}{
 		{
 			name:      "fixed price uses data length",
@@ -423,10 +482,11 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 			wantCount: 2,
 		},
 		{
-			name:      "empty data keeps requested count",
-			body:      `{"data":[]}`,
-			usePrice:  true,
-			wantCount: 3,
+			name:        "empty data is not a billable success",
+			body:        `{"data":[]}`,
+			usePrice:    true,
+			wantCount:   3,
+			wantFailure: true,
 		},
 		{
 			name:      "ratio billing ignores data length",
@@ -444,9 +504,15 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 
 			_, err := OpenaiImageHandler(c, info, resp)
 
-			require.Nil(t, err)
+			if tt.wantFailure {
+				require.NotNil(t, err)
+				require.Equal(t, http.StatusBadGateway, err.StatusCode)
+				require.Empty(t, recorder.Body.String())
+			} else {
+				require.Nil(t, err)
+				require.Equal(t, tt.body, recorder.Body.String())
+			}
 			require.Equal(t, tt.wantCount, info.PriceData.OtherRatios()["n"])
-			require.Equal(t, tt.body, recorder.Body.String())
 		})
 	}
 }
@@ -467,7 +533,7 @@ func TestOpenaiImageHandlersReturnJSONError(t *testing.T) {
 		usage, err := OpenaiImageHandler(c, info, resp)
 		require.Nil(t, usage)
 		require.NotNil(t, err)
-		require.Equal(t, http.StatusOK, err.StatusCode)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		oaiError := err.ToOpenAIError()
 		require.Equal(t, "content moderation failed", oaiError.Message)
 		require.Equal(t, "upstream_error", oaiError.Type)
@@ -481,7 +547,7 @@ func TestOpenaiImageHandlersReturnJSONError(t *testing.T) {
 		usage, err := OpenaiImageStreamHandler(c, info, resp)
 		require.Nil(t, usage)
 		require.NotNil(t, err)
-		require.Equal(t, http.StatusOK, err.StatusCode)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		require.Equal(t, "content moderation failed", err.ToOpenAIError().Message)
 		require.Empty(t, recorder.Body.String())
 	})

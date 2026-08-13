@@ -185,11 +185,11 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"status":"SUCCESS"`)
 	assert.Contains(t, recorder.Body.String(), `"delivery_status":"READY"`)
 	assert.Contains(t, recorder.Body.String(), `"final_response_required":true`)
-	assert.Contains(t, recorder.Body.String(), `"final_response_markdown":"[Open or download original image 1]`)
-	assert.NotContains(t, recorder.Body.String(), `![Generated image 1]`)
+	assert.Contains(t, recorder.Body.String(), `"final_response_markdown":"![Generated image 1]`)
+	assert.Contains(t, recorder.Body.String(), `![Generated image 1]`)
 	assert.Contains(t, recorder.Body.String(), `[Open or download original image 1]`)
 	assert.Contains(t, recorder.Body.String(), `FINAL USER-VISIBLE RESULT`)
-	assert.Contains(t, recorder.Body.String(), `BEGIN GENERATED IMAGE LINKS`)
+	assert.Contains(t, recorder.Body.String(), `BEGIN GENERATED IMAGE MARKDOWN`)
 	assert.Less(t,
 		strings.Index(recorder.Body.String(), `"type":"image"`),
 		strings.Index(recorder.Body.String(), `Image generation succeeded`),
@@ -201,16 +201,30 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 		"the native MCP image must precede final-response instructions",
 	)
 	assert.Contains(t, recorder.Body.String(), `"provider_request_performed":true`)
+	assert.Contains(t, recorder.Body.String(), `"provider_outcome":"success"`)
+	assert.Contains(t, recorder.Body.String(), `"internal_request_performed":true`)
 	assert.Contains(t, recorder.Body.String(), `"must_not_retry":true`)
 	assert.NotContains(t, recorder.Body.String(), `"b64_json"`)
 	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
 }
 
-func TestMCPCreateImageRejectsMissingBase64Data(t *testing.T) {
+func TestMCPCreateImageSupportsURLData(t *testing.T) {
 	originalHandler := mcpInternalHandler
+	originalFetch := fetchMCPGeneratedImage
+	originalStore := storeMCPGeneratedImage
 	t.Cleanup(func() {
 		mcpInternalHandler = originalHandler
+		fetchMCPGeneratedImage = originalFetch
+		storeMCPGeneratedImage = originalStore
 	})
+	fetchMCPGeneratedImage = func(_ context.Context, rawURL string, maxBytes int64) (string, error) {
+		assert.Equal(t, "https://example.com/temporary.png", rawURL)
+		assert.Equal(t, maxMCPGeneratedImageFetchBytes, maxBytes)
+		return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", nil
+	}
+	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+		return &service.GeneratedImageAsset{URL: "https://api.example.com/generated.png", ExpiresAt: time.Now().Add(time.Hour).Unix(), MimeType: mimeType}, nil
+	}
 
 	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -223,10 +237,32 @@ func TestMCPCreateImageRejectsMissingBase64Data(t *testing.T) {
 	MCPImage(context)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), `none contained valid data[].b64_json`)
-	assert.Contains(t, recorder.Body.String(), `"status":"DELIVERY_FAILURE"`)
+	assert.Contains(t, recorder.Body.String(), `"status":"SUCCESS"`)
+	assert.Contains(t, recorder.Body.String(), `"source":"url"`)
+	assert.Contains(t, recorder.Body.String(), `![Generated image 1]`)
 	assert.Contains(t, recorder.Body.String(), `"must_not_retry":true`)
 	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
+}
+
+func TestMCPCreateImageReportsSanitizedResponseShape(t *testing.T) {
+	originalHandler := mcpInternalHandler
+	t.Cleanup(func() { mcpInternalHandler = originalHandler })
+
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"error":{"message":"secret provider detail"},"trace_id":"trace-secret"}`))
+	})
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-1","prompt":"A sunrise"}}}`,
+	)
+	MCPImage(context)
+
+	assert.Contains(t, recorder.Body.String(), `"status":"DELIVERY_FAILURE"`)
+	assert.Contains(t, recorder.Body.String(), `"provider_outcome":"unknown"`)
+	assert.Contains(t, recorder.Body.String(), `"top_level_keys":["error","trace_id"]`)
+	assert.Contains(t, recorder.Body.String(), `"has_error":true`)
+	assert.NotContains(t, recorder.Body.String(), `secret provider detail`)
+	assert.NotContains(t, recorder.Body.String(), `trace-secret`)
 }
 
 func TestMCPCreateImageWithReferenceUsesImageEdit(t *testing.T) {
@@ -260,6 +296,7 @@ func TestMCPCreateImageWithReferenceUsesImageEdit(t *testing.T) {
 		require.NoError(t, request.ParseMultipartForm(1<<20))
 		assert.Equal(t, "gpt-image-2-plus", request.FormValue("model"))
 		assert.Equal(t, "Keep the hamster's appearance", request.FormValue("prompt"))
+		assert.Equal(t, "b64_json", request.FormValue("response_format"))
 		files := request.MultipartForm.File["image"]
 		require.Len(t, files, 1)
 		assert.Equal(t, "reference.png", files[0].Filename)
@@ -316,8 +353,8 @@ func TestMCPCreateImageDeduplicatesRecentIdenticalRequest(t *testing.T) {
 }
 
 func TestMCPImageCacheKeysAreVersioned(t *testing.T) {
-	assert.Equal(t, "mcp:image:result:v3:request", mcpImageCacheKey("request"))
-	assert.Equal(t, "mcp:image:inflight:v3:request", mcpImageInflightKey("request"))
+	assert.Equal(t, "mcp:image:result:v4:request", mcpImageCacheKey("request"))
+	assert.Equal(t, "mcp:image:inflight:v4:request", mcpImageInflightKey("request"))
 }
 
 func TestMakeMCPImagePreviewBoundsLargePayload(t *testing.T) {

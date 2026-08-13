@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -133,6 +134,7 @@ const mcpImageResultCacheTTL = 30 * time.Minute
 var (
 	storeMCPGeneratedImage = service.StoreGeneratedImage
 	openMCPMaterialObject  = service.OpenMaterialObjectForUser
+	fetchMCPGeneratedImage = service.FetchPublicGeneratedImage
 )
 
 func SetMCPInternalHandler(handler http.Handler) {
@@ -293,6 +295,7 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 				"status":                     "IN_PROGRESS",
 				"request_hash":               requestHash,
 				"deduplicated":               true,
+				"internal_request_performed": false,
 				"provider_request_performed": false,
 				"must_not_retry":             true,
 			},
@@ -319,21 +322,46 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 		result = callImageEditInternalAPI(c, args, payload)
 	}
 	if result.IsError {
-		return result
+		failure := mcpToolResult{
+			Content: append(result.Content, mcpContent{
+				Type: "text",
+				Text: "The image request did not produce a deliverable result. Do not automatically submit the same request again because the provider outcome may be unknown. Report this result and request_hash to the user or administrator.",
+			}),
+			StructuredContent: map[string]any{
+				"status":                     "REQUEST_FAILURE",
+				"request_hash":               requestHash,
+				"deduplicated":               false,
+				"internal_request_performed": true,
+				"provider_outcome":           "unknown",
+				"must_not_retry":             true,
+			},
+		}
+		cacheMCPImageResult(requestHash, failure)
+		return failure
 	}
 	result = newMCPImageResult(c.Request.Context(), c.GetInt("id"), result.StructuredContent)
 	result.StructuredContent["request_hash"] = requestHash
 	result.StructuredContent["deduplicated"] = false
-	result.StructuredContent["provider_request_performed"] = true
+	result.StructuredContent["internal_request_performed"] = true
+	if result.StructuredContent["status"] == "SUCCESS" {
+		result.StructuredContent["provider_request_performed"] = true
+		result.StructuredContent["provider_outcome"] = "success"
+	} else {
+		result.StructuredContent["provider_outcome"] = "unknown"
+	}
 	result.StructuredContent["must_not_retry"] = true
 	cacheMCPImageResult(requestHash, result)
 	return result
 }
 
 func newMCPImageResult(ctx context.Context, userID int, structured map[string]any) mcpToolResult {
-	responseData, ok := structured["data"].([]any)
-	if !ok || len(responseData) == 0 {
-		return newMCPImageDeliveryFailure("The provider accepted the request but did not return data[].b64_json. Do not submit the same request again automatically; ask the user or administrator to inspect the provider response.")
+	responseData, responsePath := findMCPImageResponseData(structured)
+	responseShape := describeMCPImageResponseShape(structured, responseData, responsePath)
+	if len(responseData) == 0 {
+		return newMCPImageDeliveryFailure(
+			"The internal image request completed, but its response did not contain a supported image payload. The provider outcome and billing state are unknown. Do not submit the same request again automatically; inspect response_shape first.",
+			responseShape,
+		)
 	}
 
 	deliveryContents := []mcpContent{
@@ -345,13 +373,15 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 	imageContents := make([]mcpContent, 0, len(responseData))
 	imageMetadata := make([]map[string]any, 0, len(responseData))
 	finalResponseMarkdown := make([]string, 0, len(responseData))
+	var fetchedBytes int64
 	for _, rawItem := range responseData {
 		item, ok := rawItem.(map[string]any)
 		if !ok {
 			continue
 		}
-		encoded, ok := item["b64_json"].(string)
-		if !ok {
+		encoded, source, fetchErr := resolveMCPImageData(ctx, item, &fetchedBytes)
+		if fetchErr != nil {
+			responseShape["delivery_error"] = fetchErr.Error()
 			continue
 		}
 		imageData, mimeType, ok := normalizeMCPImageData(encoded)
@@ -365,6 +395,7 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 		metadata := map[string]any{
 			"index":     len(imageMetadata) + 1,
 			"mime_type": mimeType,
+			"source":    strings.TrimSuffix(source, "_json"),
 		}
 		asset, storeErr := storeMCPGeneratedImage(ctx, userID, original, mimeType)
 		if storeErr == nil && asset != nil && strings.TrimSpace(asset.URL) != "" {
@@ -372,7 +403,9 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 			metadata["expires_at"] = asset.ExpiresAt
 			imageNumber := len(imageMetadata) + 1
 			finalResponseMarkdown = append(finalResponseMarkdown, fmt.Sprintf(
-				"[Open or download original image %d](%s)",
+				"![Generated image %d](%s)\n\n[Open or download original image %d](%s)",
+				imageNumber,
+				asset.URL,
 				imageNumber,
 				asset.URL,
 			))
@@ -417,7 +450,10 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 		imageMetadata = append(imageMetadata, metadata)
 	}
 	if len(imageMetadata) == 0 {
-		return newMCPImageDeliveryFailure("The provider returned image entries, but none contained valid data[].b64_json. Do not resubmit automatically; ask the user or administrator to inspect the response.")
+		return newMCPImageDeliveryFailure(
+			"The internal image request returned image entries, but none could be delivered as valid image data. The provider outcome and billing state are unknown. Do not resubmit automatically; inspect response_shape first.",
+			responseShape,
+		)
 	}
 	// Native MCP image blocks must be first. Codex renders these blocks directly
 	// from their base64 payload; putting explanatory text or a remote Markdown
@@ -437,7 +473,7 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 		compact["final_response_markdown"] = markdown
 		contents = append(contents, mcpContent{
 			Type: "text",
-			Text: "FINAL USER-VISIBLE RESULT (required): The native MCP image blocks earlier in this result are the inline images. Copy the download-link Markdown between BEGIN and END verbatim into the assistant's normal final response, outside the MCP tool card. Do not reconstruct a remote Markdown image from the URL, do not download it first, and do not call create_image again if rendering fails.\n\n---BEGIN GENERATED IMAGE LINKS---\n" + markdown + "\n---END GENERATED IMAGE LINKS---",
+			Text: "FINAL USER-VISIBLE RESULT (required): Copy the complete Markdown between BEGIN and END verbatim into the assistant's normal final response, outside the MCP tool card. It contains both an inline image and a fallback original-file link. Do not download it first and do not call create_image again if either renderer fails.\n\n---BEGIN GENERATED IMAGE MARKDOWN---\n" + markdown + "\n---END GENERATED IMAGE MARKDOWN---",
 		})
 	} else {
 		compact["delivery_status"] = "PREVIEW_ONLY"
@@ -460,12 +496,105 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 	}
 }
 
-func newMCPImageDeliveryFailure(message string) mcpToolResult {
+const (
+	maxMCPGeneratedImageFetchBytes int64 = 10 * 1024 * 1024
+	maxMCPGeneratedImageTotalBytes int64 = 24 * 1024 * 1024
+)
+
+func findMCPImageResponseData(structured map[string]any) ([]any, string) {
+	paths := [][]string{
+		{"data"},
+		{"images"},
+		{"result", "data"},
+		{"result", "images"},
+		{"output", "data"},
+		{"output", "images"},
+		{"response", "data"},
+	}
+	for _, path := range paths {
+		var current any = structured
+		for _, segment := range path {
+			object, ok := current.(map[string]any)
+			if !ok {
+				current = nil
+				break
+			}
+			current = object[segment]
+		}
+		if items, ok := current.([]any); ok && len(items) > 0 {
+			return items, strings.Join(path, ".")
+		}
+	}
+	return nil, ""
+}
+
+func resolveMCPImageData(ctx context.Context, item map[string]any, fetchedBytes *int64) (string, string, error) {
+	for _, key := range []string{"b64_json", "base64", "image_base64"} {
+		if encoded, ok := item[key].(string); ok && strings.TrimSpace(encoded) != "" {
+			return encoded, key, nil
+		}
+	}
+
+	for _, key := range []string{"url", "image_url"} {
+		rawURL, ok := item[key].(string)
+		if !ok || strings.TrimSpace(rawURL) == "" {
+			continue
+		}
+		encoded, err := fetchMCPGeneratedImage(ctx, rawURL, maxMCPGeneratedImageFetchBytes)
+		if err != nil {
+			return "", "", fmt.Errorf("fetch supported image URL: %w", err)
+		}
+		decodedBytes := int64(base64.StdEncoding.DecodedLen(len(encoded)))
+		if fetchedBytes != nil {
+			if *fetchedBytes+decodedBytes > maxMCPGeneratedImageTotalBytes {
+				return "", "", fmt.Errorf("remote images exceed the %d byte total limit", maxMCPGeneratedImageTotalBytes)
+			}
+			*fetchedBytes += decodedBytes
+		}
+		return encoded, key, nil
+	}
+	return "", "", fmt.Errorf("image item did not contain a supported base64 or HTTPS URL field")
+}
+
+func describeMCPImageResponseShape(structured map[string]any, items []any, responsePath string) map[string]any {
+	topLevelKeys := sortedMCPMapKeys(structured)
+	shape := map[string]any{
+		"top_level_keys": topLevelKeys,
+		"image_path":     responsePath,
+		"image_count":    len(items),
+	}
+	if len(items) > 0 {
+		if first, ok := items[0].(map[string]any); ok {
+			shape["first_image_keys"] = sortedMCPMapKeys(first)
+		} else {
+			shape["first_image_type"] = fmt.Sprintf("%T", items[0])
+		}
+	}
+	if _, exists := structured["error"]; exists {
+		shape["has_error"] = true
+	}
+	if _, exists := structured["message"]; exists {
+		shape["has_message"] = true
+	}
+	return shape
+}
+
+func sortedMCPMapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func newMCPImageDeliveryFailure(message string, responseShape map[string]any) mcpToolResult {
 	return mcpToolResult{
 		Content: []mcpContent{{Type: "text", Text: message}},
 		StructuredContent: map[string]any{
 			"status":         "DELIVERY_FAILURE",
 			"must_not_retry": true,
+			"response_shape": responseShape,
 		},
 	}
 }
@@ -534,14 +663,13 @@ func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
 }
 
 func mcpImageCacheKey(requestHash string) string {
-	// v3 results put native image blocks first and keep final-response Markdown
-	// link-only. Isolate older entries so clients cannot receive the legacy
-	// remote Markdown image that produced broken inline previews.
-	return "mcp:image:result:v3:" + requestHash
+	// v4 results keep native image blocks first and also provide final-response
+	// Markdown with an inline image plus an original-file fallback link.
+	return "mcp:image:result:v4:" + requestHash
 }
 
 func mcpImageInflightKey(requestHash string) string {
-	return "mcp:image:inflight:v3:" + requestHash
+	return "mcp:image:inflight:v4:" + requestHash
 }
 
 func getCachedMCPImageResult(requestHash string) (mcpToolResult, bool) {
@@ -576,12 +704,20 @@ func markMCPImageResultCached(result *mcpToolResult, requestHash string) {
 	}
 	result.StructuredContent["request_hash"] = requestHash
 	result.StructuredContent["deduplicated"] = true
+	result.StructuredContent["internal_request_performed"] = false
 	result.StructuredContent["provider_request_performed"] = false
 	result.StructuredContent["must_not_retry"] = true
-	result.Content = append(result.Content, mcpContent{
-		Type: "text",
-		Text: "This is the cached result of an identical recent request. No new provider request was made and no new generation charge was incurred. The native image block earlier in this result remains the inline preview. Copy structuredContent.final_response_markdown as download links only; do not call create_image again for delivery or saving problems.",
-	})
+	if result.StructuredContent["status"] == "SUCCESS" {
+		result.Content = append(result.Content, mcpContent{
+			Type: "text",
+			Text: "This is the cached result of an identical recent request. No new provider request was made and no new generation charge was incurred. The native image block earlier in this result remains the inline preview. Copy structuredContent.final_response_markdown verbatim as the inline image and fallback link; do not call create_image again for delivery or saving problems.",
+		})
+	} else {
+		result.Content = append(result.Content, mcpContent{
+			Type: "text",
+			Text: "This is the cached delivery failure from an identical recent request. No new internal or provider request was made. Do not automatically submit it again; report the existing response_shape and request_hash for diagnosis.",
+		})
+	}
 }
 
 func acquireMCPImageRequest(requestHash string) (func(), bool) {
@@ -838,7 +974,7 @@ func mediaMCPTools() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "create_image",
-			Description: "Generate or edit images through a configured image model. A SUCCESS is final and billable: native image content blocks are the inline result; copy structuredContent.final_response_markdown verbatim only for original-file download links. Do not reconstruct a Markdown image from the URL. A recent identical request is deduplicated. Never call again merely because preview, display, download, decode, save, or export failed.",
+			Description: "Generate or edit images through a configured image model. A SUCCESS is final and billable: native image content blocks provide an immediate preview, and structuredContent.final_response_markdown MUST be copied verbatim into the final assistant response to show the image with an original-file fallback link. A recent identical request is deduplicated. Never call again merely because preview, display, download, decode, save, or export failed.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -965,11 +1101,11 @@ func mcpServerNameForProfile(profile mcpToolProfile) string {
 func mcpInstructionsForProfile(profile mcpToolProfile) string {
 	switch profile {
 	case mcpToolProfileImage:
-		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks are the inline result. The assistant's normal final response MUST contain structuredContent.final_response_markdown verbatim as original-file download links only; do not reconstruct remote Markdown images from those URLs and never leave the result only inside the MCP tool card. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids."
+		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids."
 	case mcpToolProfileVideo:
 		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	default:
-		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks are the inline result. The assistant's normal final response MUST contain structuredContent.final_response_markdown verbatim as original-file download links only; do not reconstruct remote Markdown images from those URLs and never leave the result only inside the MCP tool card. Never regenerate because preview, display, download, decode, save, or export failed; use force_new only for an explicitly requested new variation. Use the exact model IDs exposed by the user's New API channels. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
+		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never regenerate because preview, display, download, decode, save, or export failed; use force_new only for an explicitly requested new variation. Use the exact model IDs exposed by the user's New API channels. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
 	}
 }
 

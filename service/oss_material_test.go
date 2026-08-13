@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -91,6 +92,23 @@ func TestBuildGeneratedImagePublicURL(t *testing.T) {
 		expiresAt,
 	)
 	assert.False(t, ok)
+}
+
+func TestGeneratedImageRedirectRejectsUploadedMaterialBeforeOSSAccess(t *testing.T) {
+	t.Setenv("MATERIAL_OSS_REGION", "cn-test")
+	t.Setenv("MATERIAL_OSS_BUCKET", "test-bucket")
+	token, err := encodeMaterialToken(materialToken{
+		Version:     1,
+		UserID:      42,
+		ObjectKey:   "temp-materials/42/upload.png",
+		ContentType: "image/png",
+		SizeBytes:   1234,
+		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+	})
+	require.NoError(t, err)
+
+	_, err = PresignGeneratedImageObject(context.Background(), token, "material.png")
+	assert.ErrorContains(t, err, "not a generated image")
 }
 
 func TestValidateMaterialMetadata(t *testing.T) {

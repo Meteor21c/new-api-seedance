@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	// that provider-specific wrapper into b64_json before forwarding it. The
 	// normalizer is deliberately a no-op for ordinary URLs and preserves all
 	// response fields (including usage).
+	responseBody = normalizeOpenAIImageResponseEnvelope(responseBody)
 	responseBody = normalizeOpenAIImageContentBody(responseBody)
 	if imageRequestWantsBase64(info) {
 		responseBody, err = inlineOpenAIImageURLs(c.Request.Context(), responseBody)
@@ -67,8 +69,17 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
-	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	if oaiError := openAIImageResponseError(&usageResp); oaiError != nil {
+		return nil, types.WithOpenAIError(*oaiError, normalizedUpstreamImageErrorStatus(resp.StatusCode))
+	}
+	if !hasOpenAIImagePayload(responseBody, imageRequestWantsBase64(info)) {
+		shape := describeOpenAIImageResponseShape(responseBody)
+		logger.LogError(c, "upstream image response has no deliverable image payload: "+shape)
+		return nil, types.NewOpenAIError(
+			fmt.Errorf("upstream image response did not contain a supported image payload (%s)", shape),
+			types.ErrorCodeBadResponseBody,
+			http.StatusBadGateway,
+		)
 	}
 
 	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
@@ -262,6 +273,7 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 
+	responseBody = normalizeOpenAIImageResponseEnvelope(responseBody)
 	responseBody = normalizeOpenAIImageContentBody(responseBody)
 	if imageRequestWantsBase64(info) {
 		responseBody, err = inlineOpenAIImageURLs(c.Request.Context(), responseBody)
@@ -282,8 +294,17 @@ func openaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	if err := common.Unmarshal(responseBody, &usageResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	if oaiError := openAIImageResponseError(&usageResp); oaiError != nil {
+		return nil, types.WithOpenAIError(*oaiError, normalizedUpstreamImageErrorStatus(resp.StatusCode))
+	}
+	if !hasOpenAIImagePayload(responseBody, imageRequestWantsBase64(info)) {
+		shape := describeOpenAIImageResponseShape(responseBody)
+		logger.LogError(c, "upstream image response has no deliverable image payload: "+shape)
+		return nil, types.NewOpenAIError(
+			fmt.Errorf("upstream image response did not contain a supported image payload (%s)", shape),
+			types.ErrorCodeBadResponseBody,
+			http.StatusBadGateway,
+		)
 	}
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
@@ -412,6 +433,181 @@ func normalizeOpenAIImageContentBody(body []byte) []byte {
 		return body
 	}
 	return normalized
+}
+
+// normalizeOpenAIImageResponseEnvelope keeps the relay strict enough to avoid
+// walking arbitrary provider JSON while accepting a small set of common
+// OpenAI-compatible wrappers and field aliases. It uses RawMessage so large
+// base64 payloads are not decoded and re-encoded as Go strings.
+func normalizeOpenAIImageResponseEnvelope(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	var envelope map[string]json.RawMessage
+	if err := common.Unmarshal(body, &envelope); err != nil {
+		return body
+	}
+
+	rawItems, found := envelope["data"]
+	sourceRoot := "data"
+	if !found {
+		if images, ok := envelope["images"]; ok {
+			rawItems, found = images, true
+			sourceRoot = "images"
+		} else {
+			for _, path := range [][2]string{{"result", "data"}, {"result", "images"}, {"output", "data"}, {"output", "images"}, {"response", "data"}} {
+				var wrapper map[string]json.RawMessage
+				if rawWrapper, ok := envelope[path[0]]; ok && common.Unmarshal(rawWrapper, &wrapper) == nil {
+					if nested, ok := wrapper[path[1]]; ok {
+						rawItems, found = nested, true
+						sourceRoot = path[0]
+						break
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		return body
+	}
+
+	normalizedItems, changed := normalizeOpenAIImageItems(rawItems)
+	if !changed && sourceRoot == "data" {
+		return body
+	}
+	envelope["data"] = normalizedItems
+	if sourceRoot != "data" {
+		// Avoid duplicating a potentially multi-megabyte base64 payload in both
+		// the provider wrapper and the canonical top-level data field.
+		delete(envelope, sourceRoot)
+	}
+	normalized, err := common.Marshal(envelope)
+	if err != nil {
+		return body
+	}
+	return normalized
+}
+
+func normalizeOpenAIImageItems(rawItems json.RawMessage) (json.RawMessage, bool) {
+	var rawValues []json.RawMessage
+	if err := common.Unmarshal(rawItems, &rawValues); err != nil {
+		return rawItems, false
+	}
+	items := make([]map[string]json.RawMessage, 0, len(rawValues))
+	changed := false
+	for _, rawValue := range rawValues {
+		var item map[string]json.RawMessage
+		if common.Unmarshal(rawValue, &item) != nil {
+			var value string
+			if common.Unmarshal(rawValue, &value) != nil || strings.TrimSpace(value) == "" {
+				return rawItems, false
+			}
+			key := "b64_json"
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "https://") {
+				key = "url"
+			}
+			encoded, err := common.Marshal(value)
+			if err != nil {
+				return rawItems, false
+			}
+			item = map[string]json.RawMessage{key: encoded}
+			changed = true
+		}
+		if _, ok := item["b64_json"]; !ok {
+			for _, alias := range []string{"base64", "image_base64"} {
+				if value, exists := item[alias]; exists {
+					item["b64_json"] = value
+					delete(item, alias)
+					changed = true
+					break
+				}
+			}
+		}
+		if _, ok := item["url"]; !ok {
+			if value, exists := item["image_url"]; exists {
+				var nested map[string]json.RawMessage
+				if common.Unmarshal(value, &nested) == nil && nested["url"] != nil {
+					value = nested["url"]
+				}
+				item["url"] = value
+				delete(item, "image_url")
+				changed = true
+			}
+		}
+		items = append(items, item)
+	}
+	normalized, err := common.Marshal(items)
+	if err != nil {
+		return rawItems, false
+	}
+	return normalized, changed
+}
+
+func openAIImageResponseError(response *dto.SimpleResponse) *types.OpenAIError {
+	if response == nil {
+		return nil
+	}
+	openAIError := response.GetOpenAIError()
+	if openAIError == nil {
+		return nil
+	}
+	if strings.TrimSpace(openAIError.Type) == "" && strings.TrimSpace(openAIError.Message) == "" && openAIError.Code == nil {
+		return nil
+	}
+	return openAIError
+}
+
+func normalizedUpstreamImageErrorStatus(status int) int {
+	if status >= http.StatusBadRequest {
+		return status
+	}
+	return http.StatusBadGateway
+}
+
+func hasOpenAIImagePayload(body []byte, requireBase64 bool) bool {
+	var envelope map[string]json.RawMessage
+	if common.Unmarshal(body, &envelope) != nil {
+		return false
+	}
+	var items []map[string]json.RawMessage
+	if common.Unmarshal(envelope["data"], &items) != nil || len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if hasNonEmptyImageString(item["b64_json"]) {
+			return true
+		}
+		if !requireBase64 && hasNonEmptyImageString(item["url"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonEmptyImageString(raw json.RawMessage) bool {
+	var value string
+	return common.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != ""
+}
+
+func describeOpenAIImageResponseShape(body []byte) string {
+	var envelope map[string]json.RawMessage
+	if common.Unmarshal(body, &envelope) != nil {
+		return "invalid_json"
+	}
+	topKeys := make([]string, 0, len(envelope))
+	for key := range envelope {
+		topKeys = append(topKeys, key)
+	}
+	sort.Strings(topKeys)
+	itemKeys := []string{}
+	var items []map[string]json.RawMessage
+	if common.Unmarshal(envelope["data"], &items) == nil && len(items) > 0 {
+		for key := range items[0] {
+			itemKeys = append(itemKeys, key)
+		}
+		sort.Strings(itemKeys)
+	}
+	return fmt.Sprintf("top_keys=%v,data_count=%d,first_item_keys=%v", topKeys, len(items), itemKeys)
 }
 
 func normalizeOpenAIImageContentItem(item map[string]json.RawMessage) bool {
