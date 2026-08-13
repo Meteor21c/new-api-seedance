@@ -22,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Copy,
   Clock3,
+  Download,
   ExternalLink,
   Film,
   ImagePlus,
@@ -370,6 +371,26 @@ function splitReferenceUrls(raw: string): string[] {
     .filter(Boolean)
 }
 
+function videoFileName(task: VideoTask, contentType = ''): string {
+  let extension = 'mp4'
+  if (contentType.includes('webm')) extension = 'webm'
+  if (contentType.includes('quicktime')) extension = 'mov'
+  const taskId = task.task_id.replaceAll(/[^a-zA-Z0-9_-]/g, '') || 'generated'
+  return `video-${taskId}.${extension}`
+}
+
+function downloadVideoBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+}
+
 function mcpEndpoint(): string {
   if (typeof window !== 'undefined' && window.location.origin) {
     return `${window.location.origin}/mcp/video`
@@ -462,19 +483,32 @@ function useAuthenticatedVideoURL(task: VideoTask) {
   const [state, setState] = useState<{
     taskId: string
     url: string
+    contentType: string
     loading: boolean
     error: string
-  }>({ taskId: '', url: '', loading: false, error: '' })
+  }>({ taskId: '', url: '', contentType: '', loading: false, error: '' })
 
   useEffect(() => {
     if (task.status !== 'SUCCESS' || !task.task_id) {
-      setState({ taskId: task.task_id, url: '', loading: false, error: '' })
+      setState({
+        taskId: task.task_id,
+        url: '',
+        contentType: '',
+        loading: false,
+        error: '',
+      })
       return
     }
 
     const controller = new AbortController()
     let objectURL = ''
-    setState({ taskId: task.task_id, url: '', loading: true, error: '' })
+    setState({
+      taskId: task.task_id,
+      url: '',
+      contentType: '',
+      loading: true,
+      error: '',
+    })
 
     void getVideoContent(task.task_id, controller.signal)
       .then((blob) => {
@@ -484,6 +518,7 @@ function useAuthenticatedVideoURL(task: VideoTask) {
         setState({
           taskId: task.task_id,
           url: objectURL,
+          contentType: blob.type,
           loading: false,
           error: '',
         })
@@ -493,6 +528,7 @@ function useAuthenticatedVideoURL(task: VideoTask) {
         setState({
           taskId: task.task_id,
           url: '',
+          contentType: '',
           loading: false,
           error: errorMessage(error),
         })
@@ -507,7 +543,13 @@ function useAuthenticatedVideoURL(task: VideoTask) {
   const currentState =
     state.taskId === task.task_id
       ? state
-      : { taskId: task.task_id, url: '', loading: true, error: '' }
+      : {
+          taskId: task.task_id,
+          url: '',
+          contentType: '',
+          loading: true,
+          error: '',
+        }
 
   return {
     ...currentState,
@@ -576,13 +618,28 @@ function VideoResult({ task }: { task: VideoTask }) {
             controls
             preload='metadata'
           />
-          <Button
-            variant='outline'
-            render={<a href={video.url} target='_blank' rel='noreferrer' />}
-          >
-            <ExternalLink />
-            {t('Open video')}
-          </Button>
+          <div className='flex flex-wrap gap-2'>
+            <Button
+              variant='outline'
+              render={<a href={video.url} target='_blank' rel='noreferrer' />}
+            >
+              <ExternalLink />
+              {t('Open video')}
+            </Button>
+            <Button
+              variant='outline'
+              render={
+                <a
+                  href={video.url}
+                  download={videoFileName(task, video.contentType)}
+                  rel='noopener'
+                />
+              }
+            >
+              <Download />
+              {t('Save video')}
+            </Button>
+          </div>
         </>
       )}
 
@@ -623,6 +680,7 @@ export function VideoGeneration() {
   const [startFrameFile, setStartFrameFile] = useState<File | null>(null)
   const [endFrameFile, setEndFrameFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const [downloadingTaskId, setDownloadingTaskId] = useState('')
   const { copyToClipboard } = useCopyToClipboard({
     successMessage: t('MCP prompt copied'),
   })
@@ -642,6 +700,21 @@ export function VideoGeneration() {
       endImageUrl: '',
     },
   })
+
+  const saveVideoTask = async (task: VideoTask) => {
+    if (!task.task_id || downloadingTaskId) return
+    setDownloadingTaskId(task.task_id)
+    try {
+      const blob = await getVideoContent(task.task_id)
+      if (!blob.size) throw new Error(t('The video response was empty'))
+      downloadVideoBlob(blob, videoFileName(task, blob.type))
+      toast.success(t('Video download started'))
+    } catch (error) {
+      toast.error(errorMessage(error) || t('Video download failed'))
+    } finally {
+      setDownloadingTaskId('')
+    }
+  }
 
   const model = form.watch('model')
   const resolution = form.watch('resolution')
@@ -1553,18 +1626,22 @@ export function VideoGeneration() {
                         >
                           {t('View')}
                         </Button>
-                        {task.status === 'SUCCESS' && task.result_url && (
+                        {task.status === 'SUCCESS' && (
                           <Button
                             className='flex-1'
+                            disabled={Boolean(downloadingTaskId)}
                             size='sm'
                             variant='outline'
-                            onClick={() => {
-                              setRestoredTask(task)
-                              setCurrentTaskId(task.task_id)
-                            }}
+                            onClick={() => void saveVideoTask(task)}
                           >
-                            <ExternalLink />
-                            {t('Load video')}
+                            {downloadingTaskId === task.task_id ? (
+                              <LoaderCircle className='animate-spin' />
+                            ) : (
+                              <Download />
+                            )}
+                            {downloadingTaskId === task.task_id
+                              ? t('Saving video')
+                              : t('Save video')}
                           </Button>
                         )}
                       </div>
