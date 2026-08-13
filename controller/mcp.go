@@ -339,10 +339,11 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 	contents := []mcpContent{
 		{
 			Type: "text",
-			Text: "Image generation succeeded. A compact preview and a temporary original-file link are returned below. Do not call create_image again to display, save, decode, or recover this result; use the existing download_url instead.",
+			Text: "Image generation succeeded and the provider request is complete. The preview is only a convenience; the original-file link is the authoritative delivery result. Do not call create_image again to display, save, decode, recover, or re-deliver this result.",
 		},
 	}
 	imageMetadata := make([]map[string]any, 0, len(responseData))
+	finalResponseMarkdown := make([]string, 0, len(responseData))
 	for _, rawItem := range responseData {
 		item, ok := rawItem.(map[string]any)
 		if !ok {
@@ -368,12 +369,21 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 		if storeErr == nil && asset != nil && strings.TrimSpace(asset.URL) != "" {
 			metadata["download_url"] = asset.URL
 			metadata["expires_at"] = asset.ExpiresAt
+			imageNumber := len(imageMetadata) + 1
+			finalResponseMarkdown = append(finalResponseMarkdown, fmt.Sprintf(
+				"![Generated image %d](%s)\n\n[Open or download original image %d](%s)",
+				imageNumber,
+				asset.URL,
+				imageNumber,
+				asset.URL,
+			))
 			contents = append(contents, mcpContent{
 				Type: "text",
 				Text: fmt.Sprintf(
-					"Original image %d download_url (expires at %s): %s\nTo save the image, download this exact URL. Do not call create_image again.",
-					len(imageMetadata)+1,
+					"Original image %d (available until %s):\n[Open or download original image %d](%s)\nUse this existing link. Do not call create_image again.",
+					imageNumber,
 					time.Unix(asset.ExpiresAt, 0).Format(time.RFC3339),
+					imageNumber,
 					asset.URL,
 				),
 			})
@@ -412,9 +422,26 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 	}
 
 	compact := map[string]any{
-		"status": "SUCCESS",
-		"count":  len(imageMetadata),
-		"images": imageMetadata,
+		"status":                  "SUCCESS",
+		"delivery_status":         "READY",
+		"count":                   len(imageMetadata),
+		"images":                  imageMetadata,
+		"final_response_required": true,
+	}
+	if len(finalResponseMarkdown) > 0 {
+		markdown := strings.Join(finalResponseMarkdown, "\n\n")
+		compact["final_response_markdown"] = markdown
+		// Put the delivery block first. Codex clients commonly collapse the full
+		// tool payload, but the model still receives the leading text block and can
+		// copy it into the normal assistant response instead of leaving the result
+		// hidden inside the MCP command card.
+		contents = append([]mcpContent{{
+			Type: "text",
+			Text: "FINAL USER-VISIBLE RESULT (required): Copy the Markdown between BEGIN and END verbatim into the assistant's normal final response, outside the MCP tool card. The turn must not end without this link. Do not replace it with a summary, do not download it first, and do not call create_image again if rendering fails.\n\n---BEGIN GENERATED IMAGE MARKDOWN---\n" + markdown + "\n---END GENERATED IMAGE MARKDOWN---",
+		}}, contents...)
+	} else {
+		compact["delivery_status"] = "PREVIEW_ONLY"
+		compact["final_response_markdown"] = "The image was generated successfully and is available in the existing MCP preview. The original-file link could not be created. Do not generate it again merely to obtain another delivery format."
 	}
 	if len(imageMetadata) == 1 {
 		if downloadURL, ok := imageMetadata[0]["download_url"]; ok {
@@ -507,11 +534,14 @@ func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
 }
 
 func mcpImageCacheKey(requestHash string) string {
-	return "mcp:image:result:" + requestHash
+	// v2 results use the short application delivery URL and contain explicit
+	// final-response Markdown. Keep v1 entries isolated so an upgrade cannot
+	// hand a client the legacy oversized OSS presigned URL.
+	return "mcp:image:result:v2:" + requestHash
 }
 
 func mcpImageInflightKey(requestHash string) string {
-	return "mcp:image:inflight:" + requestHash
+	return "mcp:image:inflight:v2:" + requestHash
 }
 
 func getCachedMCPImageResult(requestHash string) (mcpToolResult, bool) {
@@ -550,7 +580,7 @@ func markMCPImageResultCached(result *mcpToolResult, requestHash string) {
 	result.StructuredContent["must_not_retry"] = true
 	result.Content = append([]mcpContent{{
 		Type: "text",
-		Text: "This is the cached result of an identical recent request. No new provider request was made and no new generation charge was incurred. Use the existing preview or download_url; do not call create_image again for delivery or saving problems.",
+		Text: "This is the cached result of an identical recent request. No new provider request was made and no new generation charge was incurred. Copy structuredContent.final_response_markdown into the final user-visible response. Use the existing preview or download_url; do not call create_image again for delivery or saving problems.",
 	}}, result.Content...)
 }
 
@@ -808,7 +838,7 @@ func mediaMCPTools() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "create_image",
-			Description: "Generate or edit images through a configured image model. Returns a compact native preview plus a temporary original-file download URL. A recent identical request is deduplicated to prevent repeated provider charges. Never call again merely because display, decode, save, or export failed.",
+			Description: "Generate or edit images through a configured image model. A SUCCESS is final and billable: copy structuredContent.final_response_markdown verbatim into the final user-visible response so the image and original-file link appear outside the MCP tool card. A recent identical request is deduplicated. Never call again merely because preview, display, download, decode, save, or export failed.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -935,11 +965,11 @@ func mcpServerNameForProfile(profile mcpToolProfile) string {
 func mcpInstructionsForProfile(profile mcpToolProfile) string {
 	switch profile {
 	case mcpToolProfileImage:
-		return "Use create_image with the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids. Each successful result includes a compact preview and temporary original download_url. If preview, decoding, download, display, or saving fails, do not call create_image again: use the existing download_url or report the delivery error. Identical recent calls are deduplicated; set force_new only when the user explicitly asks for a new variation."
+		return "IMPORTANT: A SUCCESS from create_image is final and billable. The assistant's normal final response MUST contain structuredContent.final_response_markdown verbatim, including its image and original-file link; never leave the result only inside the MCP tool card and never end the turn without the link. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids."
 	case mcpToolProfileVideo:
 		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	default:
-		return "Use the exact model IDs exposed by the user's New API channels. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. create_image returns a compact preview and temporary original download_url; never regenerate because display, decode, download, or saving failed, and use force_new only for an explicitly requested new variation. For a local reference image, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
+		return "IMPORTANT: A SUCCESS from create_image is final and billable. The assistant's normal final response MUST contain structuredContent.final_response_markdown verbatim, including its image and original-file link; never leave the result only inside the MCP tool card and never end the turn without the link. Never regenerate because preview, display, download, decode, save, or export failed; use force_new only for an explicitly requested new variation. Use the exact model IDs exposed by the user's New API channels. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
 	}
 }
 

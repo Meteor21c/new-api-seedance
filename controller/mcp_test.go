@@ -183,8 +183,17 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"mimeType":"image/jpeg"`)
 	assert.Contains(t, recorder.Body.String(), `"data":"/9j/`)
 	assert.Contains(t, recorder.Body.String(), `"status":"SUCCESS"`)
-	assert.Contains(t, recorder.Body.String(), `Original image 1 download_url`)
-	assert.Contains(t, recorder.Body.String(), `download this exact URL`)
+	assert.Contains(t, recorder.Body.String(), `"delivery_status":"READY"`)
+	assert.Contains(t, recorder.Body.String(), `"final_response_required":true`)
+	assert.Contains(t, recorder.Body.String(), `"final_response_markdown":"![Generated image 1]`)
+	assert.Contains(t, recorder.Body.String(), `[Open or download original image 1]`)
+	assert.Contains(t, recorder.Body.String(), `FINAL USER-VISIBLE RESULT`)
+	assert.Contains(t, recorder.Body.String(), `BEGIN GENERATED IMAGE MARKDOWN`)
+	assert.Less(t,
+		strings.Index(recorder.Body.String(), `FINAL USER-VISIBLE RESULT`),
+		strings.Index(recorder.Body.String(), `Image generation succeeded`),
+		"the final-response delivery block must be the first MCP content item",
+	)
 	assert.Contains(t, recorder.Body.String(), `"provider_request_performed":true`)
 	assert.Contains(t, recorder.Body.String(), `"must_not_retry":true`)
 	assert.NotContains(t, recorder.Body.String(), `"b64_json"`)
@@ -295,8 +304,14 @@ func TestMCPCreateImageDeduplicatesRecentIdenticalRequest(t *testing.T) {
 	assert.Contains(t, second.Body.String(), `"deduplicated":true`)
 	assert.Contains(t, second.Body.String(), `"provider_request_performed":false`)
 	assert.Contains(t, second.Body.String(), `No new provider request was made`)
+	assert.Contains(t, second.Body.String(), `final_response_markdown`)
 	assert.Contains(t, third.Body.String(), `"deduplicated":false`)
 	assert.Contains(t, third.Body.String(), `"provider_request_performed":true`)
+}
+
+func TestMCPImageCacheKeysAreVersioned(t *testing.T) {
+	assert.Equal(t, "mcp:image:result:v2:request", mcpImageCacheKey("request"))
+	assert.Equal(t, "mcp:image:inflight:v2:request", mcpImageInflightKey("request"))
 }
 
 func TestMakeMCPImagePreviewBoundsLargePayload(t *testing.T) {

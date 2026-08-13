@@ -58,6 +58,41 @@ func TestBuildMaterialPublicURL(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestBuildGeneratedImagePublicURL(t *testing.T) {
+	expiresAt := time.Now().Add(time.Hour).Truncate(time.Second)
+	objectKey := "temp-materials/42/generated/result.png"
+	generatedURL, ok := buildGeneratedImagePublicURL(
+		materialStorageConfig{PublicBaseURL: "https://api.example.com"},
+		42,
+		objectKey,
+		"image/png",
+		2705589,
+		expiresAt,
+	)
+	require.True(t, ok)
+	const prefix = "https://api.example.com/v1/materials/content/"
+	require.True(t, strings.HasPrefix(generatedURL, prefix))
+	require.True(t, strings.HasSuffix(generatedURL, "/material.png"))
+	materialID := strings.TrimSuffix(strings.TrimPrefix(generatedURL, prefix), "/material.png")
+	decoded, err := decodeMaterialToken(materialID)
+	require.NoError(t, err)
+	assert.Equal(t, 42, decoded.UserID)
+	assert.Equal(t, objectKey, decoded.ObjectKey)
+	assert.Equal(t, "image/png", decoded.ContentType)
+	assert.Equal(t, int64(2705589), decoded.SizeBytes)
+	assert.Equal(t, expiresAt.Unix(), decoded.ExpiresAt)
+
+	_, ok = buildGeneratedImagePublicURL(
+		materialStorageConfig{PublicBaseURL: "http://127.0.0.1:3000"},
+		42,
+		objectKey,
+		"image/png",
+		2705589,
+		expiresAt,
+	)
+	assert.False(t, ok)
+}
+
 func TestValidateMaterialMetadata(t *testing.T) {
 	token := materialToken{
 		ContentType: "image/jpeg",

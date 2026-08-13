@@ -307,10 +307,11 @@ func OpenMaterialObjectForUser(ctx context.Context, userID int, materialID strin
 }
 
 // StoreGeneratedImage keeps a generated original in private OSS and returns a
-// direct, signed download URL. Downloads therefore do not consume New API's
-// application memory or bandwidth. The existing temp-materials lifecycle rule
-// cleans the object asynchronously; the signed URL itself expires after the
-// configured download TTL.
+// short, opaque New API delivery URL when a public base URL is configured. The
+// delivery handler streams the object and never buffers the complete file in
+// application memory. A direct OSS signed URL remains the fallback for content
+// types that the delivery route cannot serve. The existing temp-materials
+// lifecycle rule cleans the object asynchronously.
 func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeType string) (*GeneratedImageAsset, error) {
 	if userID <= 0 {
 		return nil, errors.New("authenticated user is required")
@@ -350,6 +351,22 @@ func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeTy
 		return nil, fmt.Errorf("store generated image in OSS: %w", err)
 	}
 
+	expiresAt := time.Now().Add(cfg.DownloadTTL)
+	if publicURL, ok := buildGeneratedImagePublicURL(
+		cfg,
+		userID,
+		objectKey,
+		mimeType,
+		int64(len(payload)),
+		expiresAt,
+	); ok {
+		return &GeneratedImageAsset{
+			URL:       publicURL,
+			ExpiresAt: expiresAt.Unix(),
+			MimeType:  mimeType,
+		}, nil
+	}
+
 	result, err := client.Presign(ctx, &oss.GetObjectRequest{
 		Bucket: oss.Ptr(cfg.Bucket),
 		Key:    oss.Ptr(objectKey),
@@ -363,6 +380,31 @@ func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeTy
 		ExpiresAt: result.Expiration.Unix(),
 		MimeType:  mimeType,
 	}, nil
+}
+
+func buildGeneratedImagePublicURL(
+	cfg materialStorageConfig,
+	userID int,
+	objectKey string,
+	contentType string,
+	sizeBytes int64,
+	expiresAt time.Time,
+) (string, bool) {
+	if userID <= 0 || strings.TrimSpace(objectKey) == "" || sizeBytes <= 0 || expiresAt.IsZero() {
+		return "", false
+	}
+	token, err := encodeMaterialToken(materialToken{
+		Version:     1,
+		UserID:      userID,
+		ObjectKey:   objectKey,
+		ContentType: contentType,
+		SizeBytes:   sizeBytes,
+		ExpiresAt:   expiresAt.Unix(),
+	})
+	if err != nil {
+		return "", false
+	}
+	return buildMaterialPublicURL(cfg.PublicBaseURL, token, contentType)
 }
 
 func normalizeGeneratedImageType(mimeType string, payload []byte) (string, string, error) {
