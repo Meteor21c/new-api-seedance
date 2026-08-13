@@ -2,17 +2,31 @@ package controller
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"image"
+	"image/color"
+	stddraw "image/draw"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
+	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 const (
@@ -62,10 +76,14 @@ type mcpCallToolParams struct {
 }
 
 type mcpContent struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Data     string `json:"data,omitempty"`
-	MimeType string `json:"mimeType,omitempty"`
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	Data        string `json:"data,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+	URI         string `json:"uri,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type mcpToolResult struct {
@@ -95,11 +113,13 @@ type mcpGetVideoArgs struct {
 }
 
 type mcpCreateImageArgs struct {
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	N       int    `json:"n,omitempty"`
-	Size    string `json:"size,omitempty"`
-	Quality string `json:"quality,omitempty"`
+	Model                string   `json:"model"`
+	Prompt               string   `json:"prompt"`
+	N                    int      `json:"n,omitempty"`
+	Size                 string   `json:"size,omitempty"`
+	Quality              string   `json:"quality,omitempty"`
+	ReferenceMaterialIDs []string `json:"reference_material_ids,omitempty"`
+	ForceNew             bool     `json:"force_new,omitempty"`
 }
 
 type mcpCreateMaterialUploadArgs struct {
@@ -107,6 +127,13 @@ type mcpCreateMaterialUploadArgs struct {
 	ContentType string `json:"content_type"`
 	SizeBytes   int64  `json:"size_bytes"`
 }
+
+const mcpImageResultCacheTTL = 30 * time.Minute
+
+var (
+	storeMCPGeneratedImage = service.StoreGeneratedImage
+	openMCPMaterialObject  = service.OpenMaterialObjectForUser
+)
 
 func SetMCPInternalHandler(handler http.Handler) {
 	mcpInternalHandler = handler
@@ -243,6 +270,35 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	if args.N < 1 || args.N > 4 {
 		return newMCPToolError("n must be between 1 and 4")
 	}
+	if len(args.ReferenceMaterialIDs) > 3 {
+		return newMCPToolError("reference_material_ids supports at most 3 images")
+	}
+	args.ReferenceMaterialIDs = normalizeMCPMaterialIDs(args.ReferenceMaterialIDs)
+
+	requestHash := mcpImageRequestHash(c.GetInt("id"), args)
+	if !args.ForceNew {
+		if cached, ok := getCachedMCPImageResult(requestHash); ok {
+			markMCPImageResultCached(&cached, requestHash)
+			return cached
+		}
+	}
+	releaseInflight, acquired := acquireMCPImageRequest(requestHash)
+	if !acquired {
+		return mcpToolResult{
+			Content: []mcpContent{{
+				Type: "text",
+				Text: "An identical image request is already running. Do not call create_image again. Wait for the original tool call to finish; no new provider request was made.",
+			}},
+			StructuredContent: map[string]any{
+				"status":                     "IN_PROGRESS",
+				"request_hash":               requestHash,
+				"deduplicated":               true,
+				"provider_request_performed": false,
+				"must_not_retry":             true,
+			},
+		}
+	}
+	defer releaseInflight()
 
 	payload := map[string]any{
 		"model":           args.Model,
@@ -256,23 +312,34 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	if quality := strings.TrimSpace(args.Quality); quality != "" && quality != "auto" {
 		payload["quality"] = quality
 	}
-	result := callInternalAPI(c, http.MethodPost, "/v1/images/generations", payload)
+	var result mcpToolResult
+	if len(args.ReferenceMaterialIDs) == 0 {
+		result = callInternalAPI(c, http.MethodPost, "/v1/images/generations", payload)
+	} else {
+		result = callImageEditInternalAPI(c, args, payload)
+	}
 	if result.IsError {
 		return result
 	}
-	return newMCPImageResult(result.StructuredContent)
+	result = newMCPImageResult(c.Request.Context(), c.GetInt("id"), result.StructuredContent)
+	result.StructuredContent["request_hash"] = requestHash
+	result.StructuredContent["deduplicated"] = false
+	result.StructuredContent["provider_request_performed"] = true
+	result.StructuredContent["must_not_retry"] = true
+	cacheMCPImageResult(requestHash, result)
+	return result
 }
 
-func newMCPImageResult(structured map[string]any) mcpToolResult {
+func newMCPImageResult(ctx context.Context, userID int, structured map[string]any) mcpToolResult {
 	responseData, ok := structured["data"].([]any)
 	if !ok || len(responseData) == 0 {
-		return newMCPToolError("image provider did not return data[].b64_json")
+		return newMCPImageDeliveryFailure("The provider accepted the request but did not return data[].b64_json. Do not submit the same request again automatically; ask the user or administrator to inspect the provider response.")
 	}
 
 	contents := []mcpContent{
 		{
 			Type: "text",
-			Text: "Image generation succeeded. The generated images are attached as native MCP image content.",
+			Text: "Image generation succeeded. A compact preview and a temporary original-file link are returned below. Do not call create_image again to display, save, decode, or recover this result; use the existing download_url instead.",
 		},
 	}
 	imageMetadata := make([]map[string]any, 0, len(responseData))
@@ -289,14 +356,51 @@ func newMCPImageResult(structured map[string]any) mcpToolResult {
 		if !ok {
 			continue
 		}
-		contents = append(contents, mcpContent{
-			Type:     "image",
-			Data:     imageData,
-			MimeType: mimeType,
-		})
+		original, err := base64.StdEncoding.DecodeString(imageData)
+		if err != nil || len(original) == 0 {
+			continue
+		}
 		metadata := map[string]any{
-			"index":     len(imageMetadata),
+			"index":     len(imageMetadata) + 1,
 			"mime_type": mimeType,
+		}
+		asset, storeErr := storeMCPGeneratedImage(ctx, userID, original, mimeType)
+		if storeErr == nil && asset != nil && strings.TrimSpace(asset.URL) != "" {
+			metadata["download_url"] = asset.URL
+			metadata["expires_at"] = asset.ExpiresAt
+			contents = append(contents, mcpContent{
+				Type: "text",
+				Text: fmt.Sprintf(
+					"Original image %d download_url (expires at %s): %s\nTo save the image, download this exact URL. Do not call create_image again.",
+					len(imageMetadata)+1,
+					time.Unix(asset.ExpiresAt, 0).Format(time.RFC3339),
+					asset.URL,
+				),
+			})
+			contents = append(contents, mcpContent{
+				Type:        "resource_link",
+				URI:         asset.URL,
+				Name:        fmt.Sprintf("generated-image-%d", len(imageMetadata)+1),
+				Title:       fmt.Sprintf("Generated image %d (original)", len(imageMetadata)+1),
+				Description: "Temporary signed original-file URL. Download or open this resource; never regenerate solely because a preview or save step failed.",
+				MimeType:    mimeType,
+			})
+		} else if storeErr != nil {
+			metadata["delivery_warning"] = storeErr.Error()
+		}
+		previewData, previewMimeType, previewErr := makeMCPImagePreview(original)
+		if previewErr == nil {
+			contents = append(contents, mcpContent{
+				Type:     "image",
+				Data:     previewData,
+				MimeType: previewMimeType,
+			})
+			metadata["preview_mime_type"] = previewMimeType
+		} else if _, hasURL := metadata["download_url"]; !hasURL {
+			// Last-resort delivery when OSS is unavailable. This may be large, but
+			// it still avoids charging for a second provider request.
+			contents = append(contents, mcpContent{Type: "image", Data: imageData, MimeType: mimeType})
+			metadata["preview_mime_type"] = mimeType
 		}
 		if revisedPrompt, ok := item["revised_prompt"].(string); ok && strings.TrimSpace(revisedPrompt) != "" {
 			metadata["revised_prompt"] = revisedPrompt
@@ -304,12 +408,21 @@ func newMCPImageResult(structured map[string]any) mcpToolResult {
 		imageMetadata = append(imageMetadata, metadata)
 	}
 	if len(imageMetadata) == 0 {
-		return newMCPToolError("image provider returned invalid data[].b64_json")
+		return newMCPImageDeliveryFailure("The provider returned image entries, but none contained valid data[].b64_json. Do not resubmit automatically; ask the user or administrator to inspect the response.")
 	}
 
 	compact := map[string]any{
+		"status": "SUCCESS",
 		"count":  len(imageMetadata),
 		"images": imageMetadata,
+	}
+	if len(imageMetadata) == 1 {
+		if downloadURL, ok := imageMetadata[0]["download_url"]; ok {
+			compact["download_url"] = downloadURL
+		}
+		if expiresAt, ok := imageMetadata[0]["expires_at"]; ok {
+			compact["expires_at"] = expiresAt
+		}
 	}
 	if created, ok := structured["created"]; ok {
 		compact["created"] = created
@@ -318,6 +431,173 @@ func newMCPImageResult(structured map[string]any) mcpToolResult {
 		Content:           contents,
 		StructuredContent: compact,
 	}
+}
+
+func newMCPImageDeliveryFailure(message string) mcpToolResult {
+	return mcpToolResult{
+		Content: []mcpContent{{Type: "text", Text: message}},
+		StructuredContent: map[string]any{
+			"status":         "DELIVERY_FAILURE",
+			"must_not_retry": true,
+		},
+	}
+}
+
+func makeMCPImagePreview(original []byte) (string, string, error) {
+	config, _, err := image.DecodeConfig(bytes.NewReader(original))
+	if err != nil {
+		return "", "", err
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 40_000_000 {
+		return "", "", fmt.Errorf("image dimensions exceed the preview safety limit")
+	}
+	source, _, err := image.Decode(bytes.NewReader(original))
+	if err != nil {
+		return "", "", err
+	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return "", "", fmt.Errorf("invalid image dimensions")
+	}
+	const maxDimension = 640
+	if width > maxDimension || height > maxDimension {
+		ratio := float64(maxDimension) / float64(width)
+		if height > width {
+			ratio = float64(maxDimension) / float64(height)
+		}
+		width = max(1, int(float64(width)*ratio))
+		height = max(1, int(float64(height)*ratio))
+	}
+	destination := image.NewRGBA(image.Rect(0, 0, width, height))
+	stddraw.Draw(destination, destination.Bounds(), &image.Uniform{C: color.White}, image.Point{}, stddraw.Src)
+	xdraw.CatmullRom.Scale(destination, destination.Bounds(), source, bounds, stddraw.Over, nil)
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, destination, &jpeg.Options{Quality: 78}); err != nil {
+		return "", "", err
+	}
+	return base64.StdEncoding.EncodeToString(encoded.Bytes()), "image/jpeg", nil
+}
+
+func normalizeMCPMaterialIDs(materialIDs []string) []string {
+	normalized := make([]string, 0, len(materialIDs))
+	seen := make(map[string]struct{}, len(materialIDs))
+	for _, materialID := range materialIDs {
+		materialID = strings.TrimSpace(materialID)
+		if materialID == "" {
+			continue
+		}
+		if _, exists := seen[materialID]; exists {
+			continue
+		}
+		seen[materialID] = struct{}{}
+		normalized = append(normalized, materialID)
+	}
+	return normalized
+}
+
+func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
+	args.ForceNew = false
+	encoded, _ := common.Marshal(struct {
+		UserID int                `json:"user_id"`
+		Args   mcpCreateImageArgs `json:"args"`
+	}{UserID: userID, Args: args})
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func mcpImageCacheKey(requestHash string) string {
+	return "mcp:image:result:" + requestHash
+}
+
+func mcpImageInflightKey(requestHash string) string {
+	return "mcp:image:inflight:" + requestHash
+}
+
+func getCachedMCPImageResult(requestHash string) (mcpToolResult, bool) {
+	if !common.RedisEnabled || common.RDB == nil || requestHash == "" {
+		return mcpToolResult{}, false
+	}
+	cached, err := common.RedisGet(mcpImageCacheKey(requestHash))
+	if err != nil || cached == "" {
+		return mcpToolResult{}, false
+	}
+	var result mcpToolResult
+	if err := common.Unmarshal([]byte(cached), &result); err != nil || len(result.Content) == 0 {
+		return mcpToolResult{}, false
+	}
+	return result, true
+}
+
+func cacheMCPImageResult(requestHash string, result mcpToolResult) {
+	if !common.RedisEnabled || common.RDB == nil || requestHash == "" || result.IsError {
+		return
+	}
+	encoded, err := common.Marshal(result)
+	if err != nil {
+		return
+	}
+	_ = common.RedisSet(mcpImageCacheKey(requestHash), string(encoded), mcpImageResultCacheTTL)
+}
+
+func markMCPImageResultCached(result *mcpToolResult, requestHash string) {
+	if result.StructuredContent == nil {
+		result.StructuredContent = map[string]any{}
+	}
+	result.StructuredContent["request_hash"] = requestHash
+	result.StructuredContent["deduplicated"] = true
+	result.StructuredContent["provider_request_performed"] = false
+	result.StructuredContent["must_not_retry"] = true
+	result.Content = append([]mcpContent{{
+		Type: "text",
+		Text: "This is the cached result of an identical recent request. No new provider request was made and no new generation charge was incurred. Use the existing preview or download_url; do not call create_image again for delivery or saving problems.",
+	}}, result.Content...)
+}
+
+func acquireMCPImageRequest(requestHash string) (func(), bool) {
+	if !common.RedisEnabled || common.RDB == nil || requestHash == "" {
+		return func() {}, true
+	}
+	key := mcpImageInflightKey(requestHash)
+	acquired, err := common.RDB.SetNX(context.Background(), key, "1", 10*time.Minute).Result()
+	if err != nil {
+		return func() {}, true
+	}
+	return func() { _ = common.RedisDel(key) }, acquired
+}
+
+func callImageEditInternalAPI(c *gin.Context, args mcpCreateImageArgs, payload map[string]any) mcpToolResult {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for field, rawValue := range payload {
+		value := fmt.Sprint(rawValue)
+		if err := writer.WriteField(field, value); err != nil {
+			return newMCPToolError("failed to prepare image edit request")
+		}
+	}
+	userID := c.GetInt("id")
+	for index, materialID := range args.ReferenceMaterialIDs {
+		material, err := openMCPMaterialObject(c.Request.Context(), userID, materialID)
+		if err != nil {
+			return newMCPToolError(fmt.Sprintf("reference_material_ids[%d]: %s", index, err.Error()))
+		}
+		fieldName := "image"
+		if len(args.ReferenceMaterialIDs) > 1 {
+			fieldName = "image[]"
+		}
+		part, createErr := writer.CreateFormFile(fieldName, material.FileName)
+		if createErr == nil {
+			_, createErr = io.Copy(part, material.Body)
+		}
+		_ = material.Body.Close()
+		if createErr != nil {
+			return newMCPToolError("failed to read a reference image")
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return newMCPToolError("failed to finalize image edit request")
+	}
+	return callInternalRequest(c, http.MethodPost, "/v1/images/edits", writer.FormDataContentType(), bytes.NewReader(body.Bytes()))
 }
 
 func normalizeMCPImageData(encoded string) (string, string, bool) {
@@ -434,9 +714,16 @@ func callInternalAPI(c *gin.Context, method, requestPath string, payload map[str
 		}
 		body = bytes.NewReader(requestBody)
 	}
+	return callInternalRequest(c, method, requestPath, "application/json", body)
+}
+
+func callInternalRequest(c *gin.Context, method, requestPath, contentType string, body io.Reader) mcpToolResult {
+	if mcpInternalHandler == nil {
+		return newMCPToolError("internal API is unavailable")
+	}
 	request := httptest.NewRequest(method, requestPath, body)
 	request.Header.Set("Authorization", c.GetHeader("Authorization"))
-	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Type", contentType)
 	if userHeader := c.GetHeader("New-Api-User"); userHeader != "" {
 		request.Header.Set("New-Api-User", userHeader)
 	}
@@ -521,7 +808,7 @@ func mediaMCPTools() []mcpTool {
 	return []mcpTool{
 		{
 			Name:        "create_image",
-			Description: "Generate images synchronously through a configured OpenAI-compatible image model. Generated files are returned as native MCP image content that Codex and Claude can display directly.",
+			Description: "Generate or edit images through a configured image model. Returns a compact native preview plus a temporary original-file download URL. A recent identical request is deduplicated to prevent repeated provider charges. Never call again merely because display, decode, save, or export failed.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -535,6 +822,16 @@ func mediaMCPTools() []mcpTool {
 					},
 					"size":    stringSchema("Optional provider-supported size, for example 1024x1024."),
 					"quality": stringSchema("Optional provider-supported quality, for example standard, hd, low, medium, or high."),
+					"reference_material_ids": map[string]any{
+						"type":        "array",
+						"description": "Up to 3 temporary local reference-image IDs returned by create_material_upload. When provided, create_image uses the image-edit endpoint.",
+						"items":       stringSchema("Temporary material ID."),
+						"maxItems":    3,
+					},
+					"force_new": map[string]any{
+						"type":        "boolean",
+						"description": "Request a deliberately new variation even when all other parameters are identical. Use only when the user explicitly asks for another variation. Never use to recover from preview, download, display, decoding, or saving problems.",
+					},
 				},
 				"required":             []string{"model", "prompt"},
 				"additionalProperties": false,
@@ -542,7 +839,7 @@ func mediaMCPTools() []mcpTool {
 		},
 		{
 			Name:        "create_material_upload",
-			Description: "Create a short-lived direct OSS upload for a local reference image. After this tool returns, upload the exact local file with HTTP PUT to upload_url using every returned header. Then pass material_id to create_video. The New API server does not proxy the file bytes.",
+			Description: "Create a short-lived direct OSS upload for a local reference image. Upload the exact bytes with HTTP PUT to upload_url using every returned header, then pass material_id to create_image (up to 3 references) or create_video. The New API server does not proxy the upload bytes.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -638,11 +935,11 @@ func mcpServerNameForProfile(profile mcpToolProfile) string {
 func mcpInstructionsForProfile(profile mcpToolProfile) string {
 	switch profile {
 	case mcpToolProfileImage:
-		return "Use create_image with the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group. Generated files are returned as native MCP image content; display them directly and save or export them locally when requested. Do not ask for OPENAI_API_KEY."
+		return "Use create_image with the exact image model ID exposed by the user's New API drawing channels. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids. Each successful result includes a compact preview and temporary original download_url. If preview, decoding, download, display, or saving fails, do not call create_image again: use the existing download_url or report the delivery error. Identical recent calls are deduplicated; set force_new only when the user explicitly asks for a new variation."
 	case mcpToolProfileVideo:
 		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	default:
-		return "Use the exact model IDs exposed by the user's New API channels. Use create_image for synchronous image generation; its files are returned as native MCP image content. Use create_video for asynchronous Seedance and Kling V3 generation. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For a local video reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
+		return "Use the exact model IDs exposed by the user's New API channels. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. create_image returns a compact preview and temporary original download_url; never regenerate because display, decode, download, or saving failed, and use force_new only for an explicitly requested new variation. For a local reference image, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
 	}
 }
 
@@ -663,7 +960,7 @@ func mcpToolsForProfile(profile mcpToolProfile) []mcpTool {
 func mcpToolAllowed(profile mcpToolProfile, name string) bool {
 	switch profile {
 	case mcpToolProfileImage:
-		return name == "create_image"
+		return name == "create_image" || name == "create_material_upload"
 	case mcpToolProfileVideo:
 		return name == "create_video" || name == "get_video" || name == "create_material_upload"
 	default:

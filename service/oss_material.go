@@ -70,6 +70,12 @@ type MaterialObject struct {
 	Body io.ReadCloser
 }
 
+type GeneratedImageAsset struct {
+	URL       string `json:"url"`
+	ExpiresAt int64  `json:"expires_at"`
+	MimeType  string `json:"mime_type"`
+}
+
 type materialToken struct {
 	Version     int    `json:"v"`
 	UserID      int    `json:"user_id"`
@@ -277,6 +283,105 @@ func OpenMaterialObject(ctx context.Context, materialID, requestedFileName strin
 			Closer: result.Body,
 		},
 	}, nil
+}
+
+// OpenMaterialObjectForUser opens an uploaded image only when it belongs to
+// the authenticated user. MCP image editing uses it to forward local reference
+// images to the synchronous image-edit endpoint without exposing OSS secrets.
+func OpenMaterialObjectForUser(ctx context.Context, userID int, materialID string) (*MaterialObject, error) {
+	if userID <= 0 {
+		return nil, errors.New("authenticated user is required")
+	}
+	token, err := decodeMaterialToken(strings.TrimSpace(materialID))
+	if err != nil {
+		return nil, err
+	}
+	if token.UserID != userID {
+		return nil, errors.New("material does not belong to the authenticated user")
+	}
+	_, extension, err := normalizeMaterialType("", token.ContentType)
+	if err != nil {
+		return nil, err
+	}
+	return OpenMaterialObject(ctx, materialID, "material"+extension)
+}
+
+// StoreGeneratedImage keeps a generated original in private OSS and returns a
+// direct, signed download URL. Downloads therefore do not consume New API's
+// application memory or bandwidth. The existing temp-materials lifecycle rule
+// cleans the object asynchronously; the signed URL itself expires after the
+// configured download TTL.
+func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeType string) (*GeneratedImageAsset, error) {
+	if userID <= 0 {
+		return nil, errors.New("authenticated user is required")
+	}
+	if len(payload) == 0 {
+		return nil, errors.New("generated image is empty")
+	}
+	if len(payload) > 32*1024*1024 {
+		return nil, errors.New("generated image exceeds the 32 MiB delivery limit")
+	}
+
+	mimeType, extension, err := normalizeGeneratedImageType(mimeType, payload)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := loadMaterialStorageConfig()
+	if err != nil {
+		return nil, err
+	}
+	client, err := getMaterialClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	objectKey := cfg.Prefix + strconv.Itoa(userID) + "/generated/" + uuid.NewString() + extension
+	_, err = client.PutObject(ctx, &oss.PutObjectRequest{
+		Bucket:             oss.Ptr(cfg.Bucket),
+		Key:                oss.Ptr(objectKey),
+		Body:               bytes.NewReader(payload),
+		ContentLength:      oss.Ptr(int64(len(payload))),
+		ContentType:        oss.Ptr(mimeType),
+		ContentDisposition: oss.Ptr("inline"),
+		CacheControl:       oss.Ptr("private, max-age=86400"),
+		ForbidOverwrite:    oss.Ptr("true"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store generated image in OSS: %w", err)
+	}
+
+	result, err := client.Presign(ctx, &oss.GetObjectRequest{
+		Bucket: oss.Ptr(cfg.Bucket),
+		Key:    oss.Ptr(objectKey),
+	}, oss.PresignExpires(cfg.DownloadTTL))
+	if err != nil {
+		return nil, fmt.Errorf("create generated image download signature: %w", err)
+	}
+
+	return &GeneratedImageAsset{
+		URL:       result.URL,
+		ExpiresAt: result.Expiration.Unix(),
+		MimeType:  mimeType,
+	}, nil
+}
+
+func normalizeGeneratedImageType(mimeType string, payload []byte) (string, string, error) {
+	detected := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(payload), ";")[0]))
+	declared := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	if strings.HasPrefix(detected, "image/") {
+		declared = detected
+	}
+	extensions := map[string]string{
+		"image/jpeg": ".jpg",
+		"image/png":  ".png",
+		"image/webp": ".webp",
+		"image/gif":  ".gif",
+	}
+	extension, ok := extensions[declared]
+	if !ok {
+		return "", "", errors.New("generated image type is not supported")
+	}
+	return declared, extension, nil
 }
 
 type materialReadCloser struct {

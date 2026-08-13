@@ -1,13 +1,24 @@
 package controller
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +29,25 @@ func newMCPTestContext(body string) (*gin.Context, *httptest.ResponseRecorder) {
 	context.Request = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	context.Request.Header.Set("Content-Type", "application/json")
 	context.Request.Header.Set("Authorization", "Bearer sk-test")
+	context.Set("id", 42)
 	return context, recorder
+}
+
+func useMCPMiniRedis(t *testing.T) *miniredis.Miniredis {
+	t.Helper()
+	previousRedisEnabled := common.RedisEnabled
+	previousRedisClient := common.RDB
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	require.NoError(t, client.Ping(context.Background()).Err())
+	common.RedisEnabled = true
+	common.RDB = client
+	t.Cleanup(func() {
+		_ = client.Close()
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRedisClient
+	})
+	return server
 }
 
 func TestMCPInitialize(t *testing.T) {
@@ -58,7 +87,7 @@ func TestMCPImageOnlyListsAndCallsImageTool(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"create_image"`)
 	assert.NotContains(t, recorder.Body.String(), `"create_video"`)
 	assert.NotContains(t, recorder.Body.String(), `"get_video"`)
-	assert.NotContains(t, recorder.Body.String(), `"create_material_upload"`)
+	assert.Contains(t, recorder.Body.String(), `"create_material_upload"`)
 
 	context, recorder = newMCPTestContext(
 		`{"jsonrpc":"2.0","id":"call","method":"tools/call","params":{"name":"create_video","arguments":{"prompt":"A sunrise"}}}`,
@@ -114,9 +143,21 @@ func TestMCPCreateMaterialUploadCallsInternalAPI(t *testing.T) {
 
 func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 	originalHandler := mcpInternalHandler
+	originalStore := storeMCPGeneratedImage
 	t.Cleanup(func() {
 		mcpInternalHandler = originalHandler
+		storeMCPGeneratedImage = originalStore
 	})
+	storeMCPGeneratedImage = func(_ context.Context, userID int, payload []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+		assert.Equal(t, 42, userID)
+		assert.NotEmpty(t, payload)
+		assert.Equal(t, "image/png", mimeType)
+		return &service.GeneratedImageAsset{
+			URL:       "https://oss.example/generated/original.png?signature=test",
+			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+			MimeType:  mimeType,
+		}, nil
+	}
 
 	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		assert.Equal(t, http.MethodPost, request.Method)
@@ -136,9 +177,16 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 	MCPImage(context)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"type":"resource_link"`)
+	assert.Contains(t, recorder.Body.String(), `"download_url":"https://oss.example/generated/original.png?signature=test"`)
 	assert.Contains(t, recorder.Body.String(), `"type":"image"`)
-	assert.Contains(t, recorder.Body.String(), `"mimeType":"image/png"`)
-	assert.Contains(t, recorder.Body.String(), `"data":"iVBORw0KGgo`)
+	assert.Contains(t, recorder.Body.String(), `"mimeType":"image/jpeg"`)
+	assert.Contains(t, recorder.Body.String(), `"data":"/9j/`)
+	assert.Contains(t, recorder.Body.String(), `"status":"SUCCESS"`)
+	assert.Contains(t, recorder.Body.String(), `Original image 1 download_url`)
+	assert.Contains(t, recorder.Body.String(), `download this exact URL`)
+	assert.Contains(t, recorder.Body.String(), `"provider_request_performed":true`)
+	assert.Contains(t, recorder.Body.String(), `"must_not_retry":true`)
 	assert.NotContains(t, recorder.Body.String(), `"b64_json"`)
 	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
 }
@@ -160,8 +208,124 @@ func TestMCPCreateImageRejectsMissingBase64Data(t *testing.T) {
 	MCPImage(context)
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), `image provider returned invalid data[].b64_json`)
-	assert.Contains(t, recorder.Body.String(), `"isError":true`)
+	assert.Contains(t, recorder.Body.String(), `none contained valid data[].b64_json`)
+	assert.Contains(t, recorder.Body.String(), `"status":"DELIVERY_FAILURE"`)
+	assert.Contains(t, recorder.Body.String(), `"must_not_retry":true`)
+	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
+}
+
+func TestMCPCreateImageWithReferenceUsesImageEdit(t *testing.T) {
+	originalHandler := mcpInternalHandler
+	originalOpen := openMCPMaterialObject
+	originalStore := storeMCPGeneratedImage
+	t.Cleanup(func() {
+		mcpInternalHandler = originalHandler
+		openMCPMaterialObject = originalOpen
+		storeMCPGeneratedImage = originalStore
+	})
+
+	openMCPMaterialObject = func(_ context.Context, userID int, materialID string) (*service.MaterialObject, error) {
+		assert.Equal(t, 42, userID)
+		assert.Equal(t, "material-reference", materialID)
+		return &service.MaterialObject{
+			MaterialObjectMetadata: service.MaterialObjectMetadata{
+				ContentType:   "image/png",
+				ContentLength: 3,
+				FileName:      "reference.png",
+			},
+			Body: io.NopCloser(bytes.NewReader([]byte("png"))),
+		}, nil
+	}
+	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+		return &service.GeneratedImageAsset{URL: "https://oss.example/generated/edit.png", ExpiresAt: time.Now().Add(time.Hour).Unix(), MimeType: mimeType}, nil
+	}
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, http.MethodPost, request.Method)
+		assert.Equal(t, "/v1/images/edits", request.URL.Path)
+		require.NoError(t, request.ParseMultipartForm(1<<20))
+		assert.Equal(t, "gpt-image-2-plus", request.FormValue("model"))
+		assert.Equal(t, "Keep the hamster's appearance", request.FormValue("prompt"))
+		files := request.MultipartForm.File["image"]
+		require.Len(t, files, 1)
+		assert.Equal(t, "reference.png", files[0].Filename)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"created":1,"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}]}`))
+	})
+
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-plus","prompt":"Keep the hamster's appearance","reference_material_ids":["material-reference"]}}}`,
+	)
+	MCPImage(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"download_url":"https://oss.example/generated/edit.png"`)
+	assert.NotContains(t, recorder.Body.String(), `"isError":true`)
+}
+
+func TestMCPCreateImageDeduplicatesRecentIdenticalRequest(t *testing.T) {
+	useMCPMiniRedis(t)
+	originalHandler := mcpInternalHandler
+	originalStore := storeMCPGeneratedImage
+	t.Cleanup(func() {
+		mcpInternalHandler = originalHandler
+		storeMCPGeneratedImage = originalStore
+	})
+
+	providerCalls := 0
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		providerCalls++
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"created":1,"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}]}`))
+	})
+	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+		return &service.GeneratedImageAsset{URL: "https://oss.example/generated/once.png", ExpiresAt: time.Now().Add(time.Hour).Unix(), MimeType: mimeType}, nil
+	}
+	body := `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-plus","prompt":"A hamster eating watermelon"}}}`
+
+	context, first := newMCPTestContext(body)
+	MCPImage(context)
+	context, second := newMCPTestContext(body)
+	MCPImage(context)
+	forceNewBody := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-plus","prompt":"A hamster eating watermelon","force_new":true}}}`
+	context, third := newMCPTestContext(forceNewBody)
+	MCPImage(context)
+
+	assert.Equal(t, 2, providerCalls, "only an explicit force_new request may call the provider again")
+	assert.Contains(t, first.Body.String(), `"provider_request_performed":true`)
+	assert.Contains(t, second.Body.String(), `"deduplicated":true`)
+	assert.Contains(t, second.Body.String(), `"provider_request_performed":false`)
+	assert.Contains(t, second.Body.String(), `No new provider request was made`)
+	assert.Contains(t, third.Body.String(), `"deduplicated":false`)
+	assert.Contains(t, third.Body.String(), `"provider_request_performed":true`)
+}
+
+func TestMakeMCPImagePreviewBoundsLargePayload(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 1200, 800))
+	state := uint32(1)
+	for y := 0; y < source.Bounds().Dy(); y++ {
+		for x := 0; x < source.Bounds().Dx(); x++ {
+			state = state*1664525 + 1013904223
+			source.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(state >> 24),
+				G: uint8(state >> 16),
+				B: uint8(state >> 8),
+				A: 255,
+			})
+		}
+	}
+	var original bytes.Buffer
+	require.NoError(t, png.Encode(&original, source))
+
+	previewData, mimeType, err := makeMCPImagePreview(original.Bytes())
+	require.NoError(t, err)
+	assert.Equal(t, "image/jpeg", mimeType)
+	assert.Less(t, len(previewData), 500_000, "MCP preview must remain small enough for reliable client transport")
+	decoded, err := base64.StdEncoding.DecodeString(previewData)
+	require.NoError(t, err)
+	preview, _, err := image.Decode(bytes.NewReader(decoded))
+	require.NoError(t, err)
+	assert.LessOrEqual(t, preview.Bounds().Dx(), 640)
+	assert.LessOrEqual(t, preview.Bounds().Dy(), 640)
 }
 
 func TestMCPCreateVideoCallsInternalAPI(t *testing.T) {
