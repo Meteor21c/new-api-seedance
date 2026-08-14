@@ -66,7 +66,9 @@ export interface GenerationModel {
   kind?: VideoModelKind
   billing_mode?: VideoBillingMode
   resolutions?: VideoResolution[]
+  pricing_reference?: string
   price_per_second?: number
+  price_per_million_tokens?: number
 }
 
 export interface GenerationModelsResponse {

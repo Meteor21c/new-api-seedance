@@ -15,12 +15,14 @@ import (
 )
 
 type generationModel struct {
-	ID             string   `json:"id"`
-	Tier           string   `json:"tier,omitempty"`
-	Kind           string   `json:"kind,omitempty"`
-	BillingMode    string   `json:"billing_mode,omitempty"`
-	Resolutions    []string `json:"resolutions,omitempty"`
-	PricePerSecond *float64 `json:"price_per_second,omitempty"`
+	ID                    string   `json:"id"`
+	Tier                  string   `json:"tier,omitempty"`
+	Kind                  string   `json:"kind,omitempty"`
+	BillingMode           string   `json:"billing_mode,omitempty"`
+	Resolutions           []string `json:"resolutions,omitempty"`
+	PricingReference      string   `json:"pricing_reference,omitempty"`
+	PricePerSecond        *float64 `json:"price_per_second,omitempty"`
+	PricePerMillionTokens *float64 `json:"price_per_million_tokens,omitempty"`
 }
 
 func usableGroupNames(userGroup string) []string {
@@ -78,9 +80,34 @@ func videoModelKind(modelName string) string {
 		return "kling-v3-omni"
 	case common.IsXAIVideoGenerationModel(normalized):
 		return "grok-video"
+	case strings.Contains(normalized, "seedance"):
+		return "seedance"
 	default:
 		return ""
 	}
+}
+
+func configuredModelPrice(modelName string, upstreamName string) (float64, bool) {
+	if price, ok := ratio_setting.GetModelPrice(modelName, false); ok {
+		return price, true
+	}
+	if price, ok := ratio_setting.GetModelPrice(upstreamName, false); ok {
+		return price, true
+	}
+	price, ok := ratio_setting.GetDefaultModelPriceMap()[upstreamName]
+	return price, ok
+}
+
+func configuredPricePerMillionTokens(modelName string, upstreamName string) (float64, bool) {
+	ratios := ratio_setting.GetModelRatioCopy()
+	ratio, ok := ratios[modelName]
+	if !ok {
+		ratio, ok = ratios[upstreamName]
+	}
+	if !ok {
+		return 0, false
+	}
+	return ratio * (1_000_000 / common.QuotaPerUnit), true
 }
 
 func videoModelResolutions(modelName string) []string {
@@ -177,19 +204,24 @@ func GetUserGenerationModels(c *gin.Context) {
 			}
 			item.Tier = videoModelTier(upstreamName)
 			item.Kind = videoModelKind(upstreamName)
+			item.PricingReference = upstreamName
 			if resolutions := videoModelResolutions(upstreamName); len(resolutions) > 0 {
 				item.Resolutions = resolutions
 				if common.IsXAIVideoGenerationModel(upstreamName) {
 					item.BillingMode = "per-second"
-					if price, ok := ratio_setting.GetModelPrice(name, false); ok {
-						item.PricePerSecond = &price
-					} else if price, ok := ratio_setting.GetModelPrice(upstreamName, false); ok {
-						item.PricePerSecond = &price
-					} else if price, ok := ratio_setting.GetDefaultModelPriceMap()[upstreamName]; ok {
+					if price, ok := configuredModelPrice(name, upstreamName); ok {
 						item.PricePerSecond = &price
 					}
 				} else {
 					item.BillingMode = "per-token"
+					if price, ok := configuredPricePerMillionTokens(name, upstreamName); ok {
+						item.PricePerMillionTokens = &price
+					}
+				}
+			} else {
+				item.BillingMode = "per-second"
+				if price, ok := configuredModelPrice(name, upstreamName); ok {
+					item.PricePerSecond = &price
 				}
 			}
 			items = append(items, item)

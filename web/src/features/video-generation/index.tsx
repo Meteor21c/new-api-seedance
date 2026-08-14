@@ -78,6 +78,7 @@ import {
   getVideoTasks,
   uploadMaterial,
 } from './api'
+import { VideoPriceComparison } from './price-comparison'
 import {
   VIDEO_ASPECT_RATIOS,
   VIDEO_MODES,
@@ -321,7 +322,26 @@ function estimateVideoPricePerSecond(
   referenceUrls: string,
   configuredPrice?: number
 ): number {
-  if (Number.isFinite(configuredPrice)) return configuredPrice ?? 0
+  if (Number.isFinite(configuredPrice)) {
+    if (kind === 'grok-video') return configuredPrice ?? 0
+    if (isKlingKind(kind)) {
+      const scenarioPrice = estimateKlingPrice(
+        kind,
+        resolution,
+        audio,
+        referenceUrls
+      )
+      const baselinePrice = estimateKlingPrice(kind, '720p', false, '')
+      return baselinePrice > 0
+        ? (configuredPrice ?? 0) * (scenarioPrice / baselinePrice)
+        : (configuredPrice ?? 0)
+    }
+    const scenarioPrice = PRICE_PER_SECOND[tier][resolution] ?? 0
+    const baselinePrice = PRICE_PER_SECOND[tier]['720p'] ?? 0
+    return baselinePrice > 0
+      ? (configuredPrice ?? 0) * (scenarioPrice / baselinePrice)
+      : (configuredPrice ?? 0)
+  }
   if (isKlingKind(kind)) {
     return estimateKlingPrice(kind, resolution, audio, referenceUrls)
   }
@@ -788,6 +808,7 @@ export function VideoGeneration() {
     queryKey: ['video-generation-models'],
     queryFn: getVideoModels,
     retry: false,
+    refetchInterval: 30_000,
   })
   const selectedModel = modelsQuery.data?.find((item) => item.id === model)
   const selectedKind = modelKindForSelection(model, selectedModel?.kind)
@@ -921,26 +942,6 @@ export function VideoGeneration() {
       })
     }
   }
-
-  const estimatedPrice = useMemo(() => {
-    const pricePerSecond = estimateVideoPricePerSecond(
-      selectedKind,
-      selectedTier,
-      resolution,
-      audio,
-      referenceUrls,
-      selectedModel?.price_per_second
-    )
-    return pricePerSecond * (Number.isFinite(duration) ? duration : 0)
-  }, [
-    audio,
-    duration,
-    referenceUrls,
-    resolution,
-    selectedKind,
-    selectedModel?.price_per_second,
-    selectedTier,
-  ])
 
   const estimatedPricePerSecond = estimateVideoPricePerSecond(
     selectedKind,
@@ -1608,53 +1609,20 @@ export function VideoGeneration() {
                   </div>
                 )}
 
-                <div className='bg-muted/50 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4'>
-                  {selectedBillingMode === 'per-token' ? (
-                    <>
-                      <div>
-                        <p className='text-sm font-medium'>
-                          {t('Token billing')}
-                        </p>
-                        <p className='text-muted-foreground text-xs'>
-                          {t(
-                            'The final charge is settled from totalTokens returned by the upstream provider'
-                          )}
-                        </p>
-                      </div>
-                      <div className='text-right'>
-                        <p className='text-xl font-semibold'>
-                          {t('Usage-based')}
-                        </p>
-                        <p className='text-muted-foreground text-xs'>
-                          {t('Actual returned usage prevails')}
-                        </p>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <p className='text-sm font-medium'>
-                          {t('Estimated price')}
-                        </p>
-                        <p className='text-muted-foreground text-xs'>
-                          {t(
-                            'Calculated with the configured 1:1 billing ratio'
-                          )}
-                        </p>
-                      </div>
-                      <div className='text-right'>
-                        <p className='text-xl font-semibold tabular-nums'>
-                          ¥{estimatedPrice.toFixed(4)}
-                        </p>
-                        <p className='text-muted-foreground text-xs'>
-                          ¥{estimatedPricePerSecond.toFixed(4)}
-                          {' / '}
-                          {t('second')}
-                        </p>
-                      </div>
-                    </>
-                  )}
-                </div>
+                <VideoPriceComparison
+                  billingMode={selectedBillingMode}
+                  pricingReference={selectedModel?.pricing_reference ?? model}
+                  kind={selectedKind}
+                  tier={selectedTier}
+                  resolution={resolution}
+                  audio={audio}
+                  hasInputVideo={hasReferenceVideo(referenceUrls)}
+                  duration={duration}
+                  configuredTokenBasePrice={
+                    selectedModel?.price_per_million_tokens
+                  }
+                  currentPerSecondPrice={estimatedPricePerSecond}
+                />
 
                 <Button
                   className='w-full'

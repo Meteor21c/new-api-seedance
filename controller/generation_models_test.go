@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,10 @@ type generationModelsTestResponse struct {
 	Success  bool              `json:"success"`
 	Data     []generationModel `json:"data"`
 	Fallback bool              `json:"fallback"`
+}
+
+func generationModelPrice(value float64) *float64 {
+	return &value
 }
 
 func insertGenerationModelBinding(
@@ -102,8 +107,22 @@ func TestGetUserGenerationModelsUsesChannelNamesAndMappedVideoTiers(t *testing.T
 
 	response := requestGenerationModels(t, "video")
 	require.Equal(t, []generationModel{
-		{ID: "seedace-2.0-mini", Tier: "mini"},
-		{ID: "seedance-2.0-fast", Tier: "fast"},
+		{
+			ID:               "seedace-2.0-mini",
+			Tier:             "mini",
+			Kind:             "seedance",
+			BillingMode:      "per-second",
+			PricingReference: "cheap-seedance-2.0-mini",
+			PricePerSecond:   generationModelPrice(0.36),
+		},
+		{
+			ID:               "seedance-2.0-fast",
+			Tier:             "fast",
+			Kind:             "seedance",
+			BillingMode:      "per-second",
+			PricingReference: "cheap-seedance-2.0-fast",
+			PricePerSecond:   generationModelPrice(0.576),
+		},
 	}, response.Data)
 }
 
@@ -135,12 +154,34 @@ func TestGetUserGenerationModelsReportsKlingCapabilities(t *testing.T) {
 
 	response := requestGenerationModels(t, "video")
 	require.Equal(t, []generationModel{
-		{ID: "kling-v3", Tier: "standard", Kind: "kling-v3"},
-		{ID: "kling-v3-omni", Tier: "standard", Kind: "kling-v3-omni"},
+		{
+			ID:               "kling-v3",
+			Tier:             "standard",
+			Kind:             "kling-v3",
+			BillingMode:      "per-second",
+			PricingReference: "kling-v3",
+			PricePerSecond:   generationModelPrice(0.468),
+		},
+		{
+			ID:               "kling-v3-omni",
+			Tier:             "standard",
+			Kind:             "kling-v3-omni",
+			BillingMode:      "per-second",
+			PricingReference: "kling-v3-omni",
+			PricePerSecond:   generationModelPrice(0.468),
+		},
 	}, response.Data)
 }
 
 func TestGetUserGenerationModelsReportsTokenBillingMetadata(t *testing.T) {
+	originalRatios := ratio_setting.ModelRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(
+		`{"doubao-seedance-2.5":35.42}`,
+	))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalRatios))
+	})
+
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&model.User{
 		Id:       1,
@@ -161,10 +202,13 @@ func TestGetUserGenerationModelsReportsTokenBillingMetadata(t *testing.T) {
 
 	response := requestGenerationModels(t, "video")
 	require.Equal(t, []generationModel{{
-		ID:          "my-seedance-2.5",
-		Tier:        "standard",
-		BillingMode: "per-token",
-		Resolutions: []string{"480p", "720p"},
+		ID:                    "my-seedance-2.5",
+		Tier:                  "standard",
+		Kind:                  "seedance",
+		BillingMode:           "per-token",
+		Resolutions:           []string{"480p", "720p"},
+		PricingReference:      "doubao-seedance-2.5",
+		PricePerMillionTokens: generationModelPrice(70.84),
 	}}, response.Data)
 }
 
@@ -190,6 +234,7 @@ func TestGetUserGenerationModelsIncludesOnlyXAIVideoModels(t *testing.T) {
 	require.Equal(t, "grok-video", item.Kind)
 	require.Equal(t, "per-second", item.BillingMode)
 	require.Equal(t, []string{"480p", "720p"}, item.Resolutions)
+	require.Equal(t, "grok-imagine-video", item.PricingReference)
 	require.NotNil(t, item.PricePerSecond)
 	require.InDelta(t, 0.2, *item.PricePerSecond, 0.000001)
 }
