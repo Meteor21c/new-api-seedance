@@ -69,3 +69,17 @@ func TestVideoTaskModel2DtoDoesNotSignUnfinishedTask(t *testing.T) {
 	result := videoTaskModel2Dto(task)
 	require.Empty(t, result.ResultURL)
 }
+
+func TestTaskModel2DtoExposesTokenUsageAndSettledAmount(t *testing.T) {
+	task := &model.Task{
+		TaskID: "task_token_usage",
+		Quota:  int(float64(common.QuotaPerUnit) * 2.5),
+		Data:   []byte(`{"code":200,"data":{"tokenUsage":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500}}}`),
+	}
+
+	result := TaskModel2Dto(task)
+	require.Equal(t, 1200, result.InputTokens)
+	require.Equal(t, 300, result.OutputTokens)
+	require.Equal(t, 1500, result.TotalTokens)
+	require.InDelta(t, 2.5, result.BillingAmount, 0.000001)
+}

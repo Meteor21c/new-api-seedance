@@ -14,9 +14,11 @@ import (
 )
 
 type generationModel struct {
-	ID   string `json:"id"`
-	Tier string `json:"tier,omitempty"`
-	Kind string `json:"kind,omitempty"`
+	ID          string   `json:"id"`
+	Tier        string   `json:"tier,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	BillingMode string   `json:"billing_mode,omitempty"`
+	Resolutions []string `json:"resolutions,omitempty"`
 }
 
 func usableGroupNames(userGroup string) []string {
@@ -74,6 +76,17 @@ func videoModelKind(modelName string) string {
 		return "kling-v3-omni"
 	default:
 		return ""
+	}
+}
+
+func tokenVideoModelResolutions(modelName string) []string {
+	switch strings.ToLower(strings.TrimSpace(modelName)) {
+	case "doubao-seedance-2.0":
+		return []string{"480p", "720p", "1080p", "4K"}
+	case "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5":
+		return []string{"480p", "720p"}
+	default:
+		return nil
 	}
 }
 
@@ -146,6 +159,10 @@ func GetUserGenerationModels(c *gin.Context) {
 		if kind == "video" {
 			item.Tier = videoModelTier(upstreamName)
 			item.Kind = videoModelKind(upstreamName)
+			if resolutions := tokenVideoModelResolutions(upstreamName); len(resolutions) > 0 {
+				item.BillingMode = "per-token"
+				item.Resolutions = resolutions
+			}
 			items = append(items, item)
 			seen[name] = struct{}{}
 			continue

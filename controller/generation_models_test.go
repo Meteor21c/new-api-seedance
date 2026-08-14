@@ -140,6 +140,34 @@ func TestGetUserGenerationModelsReportsKlingCapabilities(t *testing.T) {
 	}, response.Data)
 }
 
+func TestGetUserGenerationModelsReportsTokenBillingMetadata(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{
+		Id:       1,
+		Username: "token-video-user",
+		Password: "password",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}).Error)
+
+	insertGenerationModelBinding(
+		t,
+		1,
+		constant.ChannelTypeFZYingheVideo,
+		"my-seedance-2.5",
+		`{"my-seedance-2.5":"doubao-seedance-2.5"}`,
+	)
+
+	response := requestGenerationModels(t, "video")
+	require.Equal(t, []generationModel{{
+		ID:          "my-seedance-2.5",
+		Tier:        "standard",
+		BillingMode: "per-token",
+		Resolutions: []string{"480p", "720p"},
+	}}, response.Data)
+}
+
 func TestGetUserGenerationModelsFiltersMappedImageModels(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&model.User{

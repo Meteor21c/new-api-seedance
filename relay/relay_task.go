@@ -603,6 +603,7 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 	resultURL := task.GetResultURL()
+	inputTokens, outputTokens, totalTokens := taskTokenUsage(task.Data)
 	// FZYinghe provider links are short-lived. For legacy tasks created before
 	// the server-side proxy was introduced, expose the stable proxy URL too;
 	// the proxy handler still falls back to the stored provider URL while it is
@@ -617,25 +618,54 @@ func TaskModel2Dto(task *model.Task) *dto.TaskDto {
 	}
 
 	return &dto.TaskDto{
-		ID:         task.ID,
-		CreatedAt:  task.CreatedAt,
-		UpdatedAt:  task.UpdatedAt,
-		TaskID:     task.TaskID,
-		Platform:   string(task.Platform),
-		UserId:     task.UserId,
-		Group:      task.Group,
-		ChannelId:  task.ChannelId,
-		Quota:      task.Quota,
-		Action:     task.Action,
-		Status:     string(task.Status),
-		FailReason: task.FailReason,
-		ResultURL:  resultURL,
-		SubmitTime: task.SubmitTime,
-		StartTime:  task.StartTime,
-		FinishTime: task.FinishTime,
-		Progress:   task.Progress,
-		Properties: task.Properties,
-		Username:   task.Username,
-		Data:       task.Data,
+		ID:            task.ID,
+		CreatedAt:     task.CreatedAt,
+		UpdatedAt:     task.UpdatedAt,
+		TaskID:        task.TaskID,
+		Platform:      string(task.Platform),
+		UserId:        task.UserId,
+		Group:         task.Group,
+		ChannelId:     task.ChannelId,
+		Quota:         task.Quota,
+		Action:        task.Action,
+		Status:        string(task.Status),
+		FailReason:    task.FailReason,
+		ResultURL:     resultURL,
+		SubmitTime:    task.SubmitTime,
+		StartTime:     task.StartTime,
+		FinishTime:    task.FinishTime,
+		Progress:      task.Progress,
+		Properties:    task.Properties,
+		Username:      task.Username,
+		Data:          task.Data,
+		InputTokens:   inputTokens,
+		OutputTokens:  outputTokens,
+		TotalTokens:   totalTokens,
+		BillingAmount: float64(task.Quota) / float64(common.QuotaPerUnit),
 	}
+}
+
+func taskTokenUsage(data []byte) (inputTokens, outputTokens, totalTokens int) {
+	if len(data) == 0 {
+		return 0, 0, 0
+	}
+	type usage struct {
+		InputTokens  int `json:"inputTokens"`
+		OutputTokens int `json:"outputTokens"`
+		TotalTokens  int `json:"totalTokens"`
+	}
+	var response struct {
+		Data struct {
+			TokenUsage usage `json:"tokenUsage"`
+		} `json:"data"`
+		TokenUsage usage `json:"tokenUsage"`
+	}
+	if err := common.Unmarshal(data, &response); err != nil {
+		return 0, 0, 0
+	}
+	tokenUsage := response.Data.TokenUsage
+	if tokenUsage.TotalTokens == 0 {
+		tokenUsage = response.TokenUsage
+	}
+	return tokenUsage.InputTokens, tokenUsage.OutputTokens, tokenUsage.TotalTokens
 }

@@ -39,6 +39,7 @@ export type VideoModelKind =
 export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number]
 export type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIOS)[number]
 export type VideoMode = (typeof VIDEO_MODES)[number]
+export type VideoBillingMode = 'per-second' | 'per-token'
 
 export interface VideoGenerationRequest {
   model: string
@@ -62,6 +63,8 @@ export interface GenerationModel {
   id: string
   tier?: VideoTier
   kind?: VideoModelKind
+  billing_mode?: VideoBillingMode
+  resolutions?: VideoResolution[]
 }
 
 export interface GenerationModelsResponse {
@@ -97,6 +100,10 @@ export interface VideoTask {
   fail_reason: string
   result_url?: string
   quota: number
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  billing_amount?: number
   submit_time: number
   properties?: {
     input?: string

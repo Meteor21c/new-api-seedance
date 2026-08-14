@@ -81,6 +81,7 @@ import {
 import {
   VIDEO_ASPECT_RATIOS,
   VIDEO_MODES,
+  type VideoBillingMode,
   type VideoGenerationRequest,
   type VideoAspectRatio,
   type VideoModelKind,
@@ -122,6 +123,18 @@ function minimumDurationForKind(kind: VideoModelKind): number {
 
 function isKlingKind(kind: VideoModelKind): boolean {
   return kind === 'kling-v3' || kind === 'kling-v3-omni'
+}
+
+function inferredBillingMode(modelName: string): VideoBillingMode {
+  const normalized = modelName.trim().toLowerCase()
+  return [
+    'doubao-seedance-2.0',
+    'doubao-seedance-2.0-fast',
+    'doubao-seedance-2.0-mini',
+    'doubao-seedance-2.5',
+  ].includes(normalized)
+    ? 'per-token'
+    : 'per-second'
 }
 
 const KLING_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const
@@ -247,8 +260,10 @@ const TERMINAL_STATUSES = new Set(['SUCCESS', 'FAILURE'])
 
 function resolutionsForModel(
   kind: VideoModelKind,
-  tier: VideoTier
+  tier: VideoTier,
+  configuredResolutions?: VideoResolution[]
 ): VideoResolution[] {
+  if (configuredResolutions?.length) return configuredResolutions
   if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
     return ['720p', '1080p', '4K']
   }
@@ -576,6 +591,21 @@ function VideoResult({ task }: { task: VideoTask }) {
         </span>
       </div>
 
+      {task.status === 'SUCCESS' && Boolean(task.total_tokens) && (
+        <div className='bg-muted/50 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs'>
+          <span className='text-muted-foreground'>
+            {t('Actual usage: {{tokens}} Tokens', {
+              tokens: task.total_tokens?.toLocaleString(),
+            })}
+          </span>
+          <span className='font-medium tabular-nums'>
+            {t('Actual charge: ¥{{amount}}', {
+              amount: (task.billing_amount ?? 0).toFixed(4),
+            })}
+          </span>
+        </div>
+      )}
+
       {!TERMINAL_STATUSES.has(task.status) && (
         <Progress value={progressValue(task.progress)} />
       )}
@@ -730,9 +760,16 @@ export function VideoGeneration() {
   const selectedModel = modelsQuery.data?.find((item) => item.id === model)
   const selectedKind = modelKindForSelection(model, selectedModel?.kind)
   const selectedTier = selectedModel?.tier ?? inferredModelTier(model)
+  const selectedBillingMode =
+    selectedModel?.billing_mode ?? inferredBillingMode(model)
   const allowedResolutions = useMemo(
-    () => resolutionsForModel(selectedKind, selectedTier),
-    [selectedKind, selectedTier]
+    () =>
+      resolutionsForModel(
+        selectedKind,
+        selectedTier,
+        selectedModel?.resolutions
+      ),
+    [selectedKind, selectedModel?.resolutions, selectedTier]
   )
   const allowedAspectRatios = useMemo(
     () => aspectRatiosForKind(selectedKind),
@@ -788,7 +825,11 @@ export function VideoGeneration() {
     )
     const nextKind = modelKindForSelection(nextModel, nextSelectedModel?.kind)
     const nextTier = nextSelectedModel?.tier ?? inferredModelTier(nextModel)
-    const nextResolutions = resolutionsForModel(nextKind, nextTier)
+    const nextResolutions = resolutionsForModel(
+      nextKind,
+      nextTier,
+      nextSelectedModel?.resolutions
+    )
     const nextAspectRatios = aspectRatiosForKind(nextKind)
     const currentResolution = form.getValues('resolution')
     const currentAspectRatio = form.getValues('aspectRatio')
@@ -1485,24 +1526,51 @@ export function VideoGeneration() {
                 )}
 
                 <div className='bg-muted/50 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4'>
-                  <div>
-                    <p className='text-sm font-medium'>
-                      {t('Estimated price')}
-                    </p>
-                    <p className='text-muted-foreground text-xs'>
-                      {t('Calculated with the configured 1:1 billing ratio')}
-                    </p>
-                  </div>
-                  <div className='text-right'>
-                    <p className='text-xl font-semibold tabular-nums'>
-                      ¥{estimatedPrice.toFixed(4)}
-                    </p>
-                    <p className='text-muted-foreground text-xs'>
-                      ¥{estimatedPricePerSecond.toFixed(4)}
-                      {' / '}
-                      {t('second')}
-                    </p>
-                  </div>
+                  {selectedBillingMode === 'per-token' ? (
+                    <>
+                      <div>
+                        <p className='text-sm font-medium'>
+                          {t('Token billing')}
+                        </p>
+                        <p className='text-muted-foreground text-xs'>
+                          {t(
+                            'The final charge is settled from totalTokens returned by the upstream provider'
+                          )}
+                        </p>
+                      </div>
+                      <div className='text-right'>
+                        <p className='text-xl font-semibold'>
+                          {t('Usage-based')}
+                        </p>
+                        <p className='text-muted-foreground text-xs'>
+                          {t('Actual returned usage prevails')}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <p className='text-sm font-medium'>
+                          {t('Estimated price')}
+                        </p>
+                        <p className='text-muted-foreground text-xs'>
+                          {t(
+                            'Calculated with the configured 1:1 billing ratio'
+                          )}
+                        </p>
+                      </div>
+                      <div className='text-right'>
+                        <p className='text-xl font-semibold tabular-nums'>
+                          ¥{estimatedPrice.toFixed(4)}
+                        </p>
+                        <p className='text-muted-foreground text-xs'>
+                          ¥{estimatedPricePerSecond.toFixed(4)}
+                          {' / '}
+                          {t('second')}
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 <Button

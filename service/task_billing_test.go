@@ -512,6 +512,29 @@ func TestRecalculate_ZeroDelta(t *testing.T) {
 	assert.Equal(t, int64(0), countLogs(t))
 }
 
+func TestRecalculateByTokensUsesSubmitTimeModelRatioSnapshot(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, channelID = 15, 15
+	const initQuota, preConsumed = 10000, 500
+	seedUser(t, userID, initQuota)
+	seedChannel(t, channelID)
+
+	task := makeTask(userID, channelID, preConsumed, 0, BillingSourceWallet, 0)
+	task.Properties.OriginModelName = "unconfigured-video-alias"
+	task.PrivateData.BillingContext.OriginModelName = "unconfigured-video-alias"
+	task.PrivateData.BillingContext.ModelRatio = 2
+	task.PrivateData.BillingContext.OtherRatios = map[string]float64{"token_scene": 0.5}
+
+	RecalculateTaskQuotaByTokens(ctx, task, 1000)
+
+	// 1000 tokens * model ratio 2 * group ratio 1 * scene ratio 0.5.
+	const actualQuota = 1000
+	assert.Equal(t, actualQuota, task.Quota)
+	assert.Equal(t, initQuota-(actualQuota-preConsumed), getUserQuota(t, userID))
+}
+
 func TestRecalculate_ActualQuotaZero(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()

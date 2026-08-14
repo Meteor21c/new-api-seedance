@@ -52,6 +52,10 @@ var ModelList = []string{
 	"cheap-seedance-2.0",
 	"cheap-seedance-2.0-fast",
 	"cheap-seedance-2.0-mini",
+	"doubao-seedance-2.0",
+	"doubao-seedance-2.0-fast",
+	"doubao-seedance-2.0-mini",
+	"doubao-seedance-2.5",
 	"kling-v3",
 	"kling-v3-omni",
 }
@@ -84,6 +88,24 @@ var allowedResolutions = map[string]map[string]float64{
 	},
 	"cheap-seedance-2.0-mini": {
 		"480p": 0.5,
+		"720p": 1,
+	},
+	"doubao-seedance-2.0": {
+		"480p":  1,
+		"720p":  1,
+		"1080p": 1,
+		"4K":    1,
+	},
+	"doubao-seedance-2.0-fast": {
+		"480p": 1,
+		"720p": 1,
+	},
+	"doubao-seedance-2.0-mini": {
+		"480p": 1,
+		"720p": 1,
+	},
+	"doubao-seedance-2.5": {
+		"480p": 1,
 		"720p": 1,
 	},
 	"kling-v3": {
@@ -164,6 +186,32 @@ type requestPayload struct {
 	CfgScale        *float64          `json:"-"`
 }
 
+type seedanceMediaURL struct {
+	URL string `json:"url"`
+}
+
+type seedanceContentPart struct {
+	Type     string            `json:"type"`
+	Text     string            `json:"text,omitempty"`
+	ImageURL *seedanceMediaURL `json:"image_url,omitempty"`
+	VideoURL *seedanceMediaURL `json:"video_url,omitempty"`
+	AudioURL *seedanceMediaURL `json:"audio_url,omitempty"`
+	Role     string            `json:"role,omitempty"`
+}
+
+// seedanceTokenRequest is the vendor-native request used by the direct,
+// token-billed Seedance models. Legacy cheap-* models intentionally retain
+// requestPayload and their existing per-second billing contract.
+type seedanceTokenRequest struct {
+	Model         string                `json:"model"`
+	Content       []seedanceContentPart `json:"content"`
+	GenerateAudio bool                  `json:"generate_audio"`
+	Ratio         string                `json:"ratio"`
+	Resolution    string                `json:"resolution"`
+	Duration      int                   `json:"duration"`
+	Watermark     bool                  `json:"watermark"`
+}
+
 type klingV3Request struct {
 	ModelName      string           `json:"model_name"`
 	Prompt         string           `json:"prompt,omitempty"`
@@ -210,6 +258,12 @@ type upstreamTaskResult struct {
 	Videos []upstreamVideo `json:"videos,omitempty"`
 }
 
+type upstreamTokenUsage struct {
+	InputTokens  int `json:"inputTokens,omitempty"`
+	OutputTokens int `json:"outputTokens,omitempty"`
+	TotalTokens  int `json:"totalTokens,omitempty"`
+}
+
 // flexibleInt64 accepts the timestamp representation used by the different
 // FZYinghe task endpoints.  The Seedance endpoint currently returns
 // createdAt as a JSON string, while other responses may return a JSON number.
@@ -234,29 +288,35 @@ func (value *flexibleInt64) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	parsed, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid integer timestamp %q: %w", raw, err)
+	if err == nil {
+		*value = flexibleInt64(parsed)
+		return nil
 	}
-	*value = flexibleInt64(parsed)
-	return nil
+	parsedTime, timeErr := time.Parse(time.RFC3339, raw)
+	if timeErr == nil {
+		*value = flexibleInt64(parsedTime.Unix())
+		return nil
+	}
+	return fmt.Errorf("invalid timestamp %q: %w", raw, err)
 }
 
 type upstreamTask struct {
-	TaskID         string             `json:"taskId,omitempty"`
-	TaskIDSnake    string             `json:"task_id,omitempty"`
-	ID             string             `json:"id,omitempty"`
-	Status         string             `json:"status,omitempty"`
-	TaskStatus     string             `json:"task_status,omitempty"`
-	TaskStatusMsg  string             `json:"task_status_msg,omitempty"`
-	TaskResult     upstreamTaskResult `json:"task_result,omitempty"`
-	CreatedAt      flexibleInt64      `json:"createdAt,omitempty"`
-	CreatedAtSnake flexibleInt64      `json:"created_at,omitempty"`
-	ResultURL      string             `json:"resultUrl,omitempty"`
-	URL            string             `json:"url,omitempty"`
-	ThumbnailURL   string             `json:"thumbnailUrl,omitempty"`
-	FailReason     string             `json:"failReason,omitempty"`
-	URLExpiresAt   string             `json:"url_expires_at,omitempty"`
-	Error          *upstreamError     `json:"error,omitempty"`
+	TaskID         string              `json:"taskId,omitempty"`
+	TaskIDSnake    string              `json:"task_id,omitempty"`
+	ID             string              `json:"id,omitempty"`
+	Status         string              `json:"status,omitempty"`
+	TaskStatus     string              `json:"task_status,omitempty"`
+	TaskStatusMsg  string              `json:"task_status_msg,omitempty"`
+	TaskResult     upstreamTaskResult  `json:"task_result,omitempty"`
+	CreatedAt      flexibleInt64       `json:"createdAt,omitempty"`
+	CreatedAtSnake flexibleInt64       `json:"created_at,omitempty"`
+	ResultURL      string              `json:"resultUrl,omitempty"`
+	URL            string              `json:"url,omitempty"`
+	ThumbnailURL   string              `json:"thumbnailUrl,omitempty"`
+	FailReason     string              `json:"failReason,omitempty"`
+	URLExpiresAt   string              `json:"url_expires_at,omitempty"`
+	Error          *upstreamError      `json:"error,omitempty"`
+	TokenUsage     *upstreamTokenUsage `json:"tokenUsage,omitempty"`
 }
 
 type upstreamEnvelope struct {
@@ -376,6 +436,13 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, _ *relaycommon.RelayInfo) 
 	if err != nil {
 		return nil
 	}
+	if isTokenBilledSeedanceModel(payload.Model) {
+		// totalTokens already represents the generated video's size and duration.
+		// Reusing the old duration/resolution multipliers would double-charge.
+		return map[string]float64{
+			"token_scene": seedanceTokenSceneRatio(payload),
+		}
+	}
 	resolutionRatio := allowedResolutions[payload.Model][payload.Resolution]
 	ratios := map[string]float64{
 		"duration":   float64(payload.DurationSeconds),
@@ -417,6 +484,17 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	}
 	if isKlingV3Model(payload.Model) || isKlingV3OmniModel(payload.Model) {
 		body, buildErr := buildKlingRequest(payload)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		encoded, marshalErr := common.Marshal(body)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		return bytes.NewReader(encoded), nil
+	}
+	if isTokenBilledSeedanceModel(payload.Model) {
+		body, buildErr := buildSeedanceTokenRequest(payload)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -504,6 +582,10 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 
 	result := &relaycommon.TaskInfo{Code: 0}
+	if task.TokenUsage != nil {
+		result.CompletionTokens = task.TokenUsage.OutputTokens
+		result.TotalTokens = task.TokenUsage.TotalTokens
+	}
 	switch strings.ToUpper(normalizedTaskStatus(task)) {
 	case "PENDING", "QUEUED", "SUBMITTED":
 		result.Status = model.TaskStatusQueued
@@ -577,6 +659,69 @@ func isKlingV3OmniModel(modelName string) bool {
 
 func isKlingModel(modelName string) bool {
 	return isKlingV3Model(modelName) || isKlingV3OmniModel(modelName)
+}
+
+func isTokenBilledSeedanceModel(modelName string) bool {
+	switch strings.ToLower(strings.TrimSpace(modelName)) {
+	case "doubao-seedance-2.0", "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5":
+		return true
+	default:
+		return false
+	}
+}
+
+// seedanceTokenSceneRatio is relative to each model's no-input-video base
+// price. The administrator configures that base selling price as the model's
+// per-1M-token price; these ratios preserve the upstream scenario matrix.
+func seedanceTokenSceneRatio(payload requestPayload) float64 {
+	modelName := strings.ToLower(strings.TrimSpace(payload.Model))
+	resolution := normalizeResolution(payload.Resolution)
+	hasInputVideo := seedanceHasInputVideo(payload)
+
+	switch modelName {
+	case "doubao-seedance-2.0":
+		if hasInputVideo {
+			switch resolution {
+			case "1080p":
+				return 31.0 / 46.0
+			case "4K":
+				return 16.0 / 46.0
+			default:
+				return 28.0 / 46.0
+			}
+		}
+		switch resolution {
+		case "1080p":
+			return 51.0 / 46.0
+		case "4K":
+			return 26.0 / 46.0
+		default:
+			return 1
+		}
+	case "doubao-seedance-2.0-fast":
+		if hasInputVideo {
+			return 22.0 / 37.0
+		}
+	case "doubao-seedance-2.0-mini":
+		if hasInputVideo {
+			return 14.0 / 23.0
+		}
+	case "doubao-seedance-2.5":
+		if hasInputVideo {
+			return 42.0 / 70.0
+		}
+	}
+	return 1
+}
+
+func seedanceHasInputVideo(payload requestPayload) bool {
+	for _, raw := range payload.ReferenceImages {
+		_, referenceURL := splitReference(raw)
+		if referenceExtension(referenceURL) == ".mp4" {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultResolutionForModel(modelName string) string {
@@ -791,7 +936,7 @@ func normalizeRequest(req relaycommon.TaskSubmitReq, options inputOptions) (requ
 		if mode == "start_end_frame" && (!hasStartReference || !hasEndReference) {
 			return requestPayload{}, fmt.Errorf("start_end_frame mode requires both start and end images")
 		}
-		if mode == "text_with_reference" {
+		if mode == "text_with_reference" && !isTokenBilledSeedanceModel(modelName) {
 			prompt, err = ensureSeedanceImageMentions(prompt, references)
 			if err != nil {
 				return requestPayload{}, err
@@ -919,6 +1064,71 @@ func validateKlingInputLists(images []klingImageInput, videos []klingVideoInput)
 		}
 	}
 	return nil
+}
+
+func buildSeedanceTokenRequest(payload requestPayload) (seedanceTokenRequest, error) {
+	content := []seedanceContentPart{{
+		Type: "text",
+		Text: payload.Input,
+	}}
+	seen := make(map[string]struct{})
+	appendReference := func(raw string) error {
+		_, referenceURL := splitReference(raw)
+		referenceURL = strings.TrimSpace(referenceURL)
+		if referenceURL == "" {
+			return nil
+		}
+		if _, exists := seen[referenceURL]; exists {
+			return nil
+		}
+		seen[referenceURL] = struct{}{}
+		mediaURL := &seedanceMediaURL{URL: referenceURL}
+		switch referenceExtension(referenceURL) {
+		case ".jpg", ".jpeg", ".png", ".webp":
+			content = append(content, seedanceContentPart{
+				Type:     "image_url",
+				ImageURL: mediaURL,
+				Role:     "reference_image",
+			})
+		case ".mp4":
+			content = append(content, seedanceContentPart{
+				Type:     "video_url",
+				VideoURL: mediaURL,
+				Role:     "reference_video",
+			})
+		case ".mp3", ".wav":
+			content = append(content, seedanceContentPart{
+				Type:     "audio_url",
+				AudioURL: mediaURL,
+				Role:     "reference_audio",
+			})
+		default:
+			return fmt.Errorf("unsupported Seedance reference file type %q", referenceExtension(referenceURL))
+		}
+		return nil
+	}
+
+	for _, reference := range payload.ReferenceImages {
+		if err := appendReference(reference); err != nil {
+			return seedanceTokenRequest{}, err
+		}
+	}
+	if err := appendReference(payload.StartImageURL); err != nil {
+		return seedanceTokenRequest{}, err
+	}
+	if err := appendReference(payload.EndImageURL); err != nil {
+		return seedanceTokenRequest{}, err
+	}
+
+	return seedanceTokenRequest{
+		Model:         payload.Model,
+		Content:       content,
+		GenerateAudio: payload.Audio,
+		Ratio:         payload.AspectRatio,
+		Resolution:    payload.Resolution,
+		Duration:      payload.DurationSeconds,
+		Watermark:     false,
+	}, nil
 }
 
 func buildKlingRequest(payload requestPayload) (any, error) {

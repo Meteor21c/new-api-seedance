@@ -53,6 +53,10 @@ func TestSeedanceDashboardModels(t *testing.T) {
 		"cheap-seedance-2.0",
 		"cheap-seedance-2.0-fast",
 		"cheap-seedance-2.0-mini",
+		"doubao-seedance-2.0",
+		"doubao-seedance-2.0-fast",
+		"doubao-seedance-2.0-mini",
+		"doubao-seedance-2.5",
 		"kling-v3",
 		"kling-v3-omni",
 	}, channelId2Models[constant.ChannelTypeFZYingheVideo])

@@ -104,6 +104,39 @@ func TestBuildKlingV3RequestUsesOfficialFieldNames(t *testing.T) {
 	assert.JSONEq(t, `{"model_name":"kling-v3","prompt":"A girl smiles","image":"https://cdn.example.com/start.png","duration":5,"mode":"std","sound":"on"}`, string(encoded))
 }
 
+func TestBuildSeedanceTokenRequestUsesVendorNativeContent(t *testing.T) {
+	body, err := buildSeedanceTokenRequest(requestPayload{
+		Model:           "doubao-seedance-2.0",
+		Input:           "Use every reference",
+		Resolution:      "1080p",
+		AspectRatio:     "16:9",
+		DurationSeconds: 5,
+		Audio:           true,
+		ReferenceImages: []string{
+			"reference:https://cdn.example.com/style.png",
+			"reference:https://cdn.example.com/motion.mp4",
+			"reference:https://cdn.example.com/music.mp3",
+		},
+	})
+	require.NoError(t, err)
+	encoded, err := common.Marshal(body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"model":"doubao-seedance-2.0",
+		"content":[
+			{"type":"text","text":"Use every reference"},
+			{"type":"image_url","image_url":{"url":"https://cdn.example.com/style.png"},"role":"reference_image"},
+			{"type":"video_url","video_url":{"url":"https://cdn.example.com/motion.mp4"},"role":"reference_video"},
+			{"type":"audio_url","audio_url":{"url":"https://cdn.example.com/music.mp3"},"role":"reference_audio"}
+		],
+		"generate_audio":true,
+		"ratio":"16:9",
+		"resolution":"1080p",
+		"duration":5,
+		"watermark":false
+	}`, string(encoded))
+}
+
 func TestNormalizeKlingOfficialImageDoesNotBecomeBothFrames(t *testing.T) {
 	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
 		Model:  "kling-v3",
@@ -264,6 +297,55 @@ func TestEstimateBillingUsesDurationAndResolution(t *testing.T) {
 	assert.Equal(t, 2.5, ratios["resolution"])
 }
 
+func TestEstimateBillingTokenModelsUseOnlySceneRatio(t *testing.T) {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(requestContextKey, requestPayload{
+		Model:           "doubao-seedance-2.0",
+		Resolution:      "1080p",
+		DurationSeconds: 8,
+		ReferenceImages: []string{"reference:https://cdn.example.com/motion.mp4"},
+	})
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(context, &relaycommon.RelayInfo{})
+
+	assert.InDelta(t, 31.0/46.0, ratios["token_scene"], 0.000001)
+	assert.NotContains(t, ratios, "duration")
+	assert.NotContains(t, ratios, "resolution")
+}
+
+func TestSeedanceTokenScenePriceMatrix(t *testing.T) {
+	tests := []struct {
+		model      string
+		resolution string
+		inputVideo bool
+		basePrice  float64
+		wantPrice  float64
+	}{
+		{"doubao-seedance-2.0", "480p", false, 46, 46},
+		{"doubao-seedance-2.0", "1080p", false, 46, 51},
+		{"doubao-seedance-2.0", "4K", false, 46, 26},
+		{"doubao-seedance-2.0", "720p", true, 46, 28},
+		{"doubao-seedance-2.0", "1080p", true, 46, 31},
+		{"doubao-seedance-2.0", "4K", true, 46, 16},
+		{"doubao-seedance-2.0-fast", "720p", false, 37, 37},
+		{"doubao-seedance-2.0-fast", "720p", true, 37, 22},
+		{"doubao-seedance-2.0-mini", "480p", false, 23, 23},
+		{"doubao-seedance-2.0-mini", "480p", true, 23, 14},
+		{"doubao-seedance-2.5", "720p", false, 70, 70},
+		{"doubao-seedance-2.5", "720p", true, 70, 42},
+	}
+
+	for _, test := range tests {
+		t.Run(test.model+"/"+test.resolution, func(t *testing.T) {
+			payload := requestPayload{Model: test.model, Resolution: test.resolution}
+			if test.inputVideo {
+				payload.ReferenceImages = []string{"https://cdn.example.com/input.mp4"}
+			}
+			assert.InDelta(t, test.wantPrice, test.basePrice*seedanceTokenSceneRatio(payload), 0.000001)
+		})
+	}
+}
+
 func TestEstimateBillingUsesKlingAudioAndReferenceVideoRatios(t *testing.T) {
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())
 	context.Set(requestContextKey, requestPayload{
@@ -416,6 +498,15 @@ func TestParseTaskResultMapsTerminalStates(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, model.TaskStatusFailure, failed.Status)
 	assert.Equal(t, "cancelled by user", failed.Reason)
+}
+
+func TestParseTaskResultReturnsTokenUsage(t *testing.T) {
+	result, err := (&TaskAdaptor{}).ParseTaskResult([]byte(
+		`{"code":200,"data":{"taskId":"upstream-usage","status":"SUCCESS","createdAt":"2026-05-15T10:00:00Z","resultUrl":"https://cdn.example.com/result.mp4","tokenUsage":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500}}}`,
+	))
+	require.NoError(t, err)
+	assert.Equal(t, 300, result.CompletionTokens)
+	assert.Equal(t, 1500, result.TotalTokens)
 }
 
 func TestTasksEndpointDoesNotDuplicatePath(t *testing.T) {
