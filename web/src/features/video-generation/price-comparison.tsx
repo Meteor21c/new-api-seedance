@@ -213,12 +213,7 @@ export function VideoPriceComparison({
   return (
     <div className='bg-muted/50 space-y-4 rounded-lg border p-4'>
       <div className='flex flex-wrap items-start justify-between gap-3'>
-        <div>
-          <p className='text-sm font-semibold'>{t('Price comparison')}</p>
-          <p className='text-muted-foreground text-xs'>
-            {t('Site price refreshes automatically from backend configuration')}
-          </p>
-        </div>
+        <p className='text-sm font-semibold'>{t('Price comparison')}</p>
         <Badge variant='outline'>
           {isTokenBilling ? t('Token billing') : t('Per-second billing')}
         </Badge>
@@ -276,12 +271,7 @@ export function VideoPriceComparison({
         </div>
       </div>
 
-      <div className='text-muted-foreground flex flex-wrap justify-between gap-2 text-xs'>
-        <span>
-          {t('Official reference is from FZYinghe model marketplace')} ·{' '}
-          {resolution} ·{' '}
-          {hasInputVideo ? t('With input video') : t('Without input video')}
-        </span>
+      <div className='text-muted-foreground flex flex-wrap justify-end gap-2 text-xs'>
         {isTokenBilling ? (
           <span>{t('Actual returned usage prevails')}</span>
         ) : (
