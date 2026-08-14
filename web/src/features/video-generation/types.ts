@@ -34,6 +34,7 @@ export type VideoTier = 'standard' | 'fast' | 'mini'
 export type VideoModelKind =
   | 'kling-v3'
   | 'kling-v3-omni'
+  | 'grok-video'
   | 'seedance'
   | 'unknown'
 export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number]
@@ -65,6 +66,7 @@ export interface GenerationModel {
   kind?: VideoModelKind
   billing_mode?: VideoBillingMode
   resolutions?: VideoResolution[]
+  price_per_second?: number
 }
 
 export interface GenerationModelsResponse {

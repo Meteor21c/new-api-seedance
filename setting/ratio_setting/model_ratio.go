@@ -301,6 +301,7 @@ var defaultModelPrice = map[string]float64{
 	"cheap-seedance-2.0-mini":        0.36,
 	"kling-v3":                       0.468,
 	"kling-v3-omni":                  0.468,
+	"grok-imagine-video":             0.2,
 	"gpt-4o-mini-tts":                0.3,
 	"veo-3.0-generate-001":           0.4,
 	"veo-3.0-fast-generate-001":      0.15,

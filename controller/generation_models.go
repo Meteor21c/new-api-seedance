@@ -9,16 +9,18 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
 
 type generationModel struct {
-	ID          string   `json:"id"`
-	Tier        string   `json:"tier,omitempty"`
-	Kind        string   `json:"kind,omitempty"`
-	BillingMode string   `json:"billing_mode,omitempty"`
-	Resolutions []string `json:"resolutions,omitempty"`
+	ID             string   `json:"id"`
+	Tier           string   `json:"tier,omitempty"`
+	Kind           string   `json:"kind,omitempty"`
+	BillingMode    string   `json:"billing_mode,omitempty"`
+	Resolutions    []string `json:"resolutions,omitempty"`
+	PricePerSecond *float64 `json:"price_per_second,omitempty"`
 }
 
 func usableGroupNames(userGroup string) []string {
@@ -74,16 +76,20 @@ func videoModelKind(modelName string) string {
 		return "kling-v3"
 	case normalized == "kling-v3-omni":
 		return "kling-v3-omni"
+	case common.IsXAIVideoGenerationModel(normalized):
+		return "grok-video"
 	default:
 		return ""
 	}
 }
 
-func tokenVideoModelResolutions(modelName string) []string {
+func videoModelResolutions(modelName string) []string {
 	switch strings.ToLower(strings.TrimSpace(modelName)) {
 	case "doubao-seedance-2.0":
 		return []string{"480p", "720p", "1080p", "4K"}
 	case "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini", "doubao-seedance-2.5":
+		return []string{"480p", "720p"}
+	case "grok-imagine-video":
 		return []string{"480p", "720p"}
 	default:
 		return nil
@@ -124,6 +130,14 @@ func GetUserGenerationModels(c *gin.Context) {
 			groups,
 			constant.ChannelTypeFZYingheVideo,
 		)
+		if err == nil {
+			var xaiBindings []model.EnabledChannelModel
+			xaiBindings, err = model.GetEnabledChannelModelsForGroupsByType(
+				groups,
+				constant.ChannelTypeXai,
+			)
+			bindings = append(bindings, xaiBindings...)
+		}
 	case "image":
 		bindings, err = model.GetEnabledChannelModelsForGroups(groups)
 	default:
@@ -157,11 +171,26 @@ func GetUserGenerationModels(c *gin.Context) {
 		upstreamName := mappedGenerationModel(binding)
 		item := generationModel{ID: name}
 		if kind == "video" {
+			if binding.ChannelType == constant.ChannelTypeXai &&
+				!common.IsXAIVideoGenerationModel(upstreamName) {
+				continue
+			}
 			item.Tier = videoModelTier(upstreamName)
 			item.Kind = videoModelKind(upstreamName)
-			if resolutions := tokenVideoModelResolutions(upstreamName); len(resolutions) > 0 {
-				item.BillingMode = "per-token"
+			if resolutions := videoModelResolutions(upstreamName); len(resolutions) > 0 {
 				item.Resolutions = resolutions
+				if common.IsXAIVideoGenerationModel(upstreamName) {
+					item.BillingMode = "per-second"
+					if price, ok := ratio_setting.GetModelPrice(name, false); ok {
+						item.PricePerSecond = &price
+					} else if price, ok := ratio_setting.GetModelPrice(upstreamName, false); ok {
+						item.PricePerSecond = &price
+					} else if price, ok := ratio_setting.GetDefaultModelPriceMap()[upstreamName]; ok {
+						item.PricePerSecond = &price
+					}
+				} else {
+					item.BillingMode = "per-token"
+				}
 			}
 			items = append(items, item)
 			seen[name] = struct{}{}

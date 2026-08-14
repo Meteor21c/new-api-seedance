@@ -71,6 +71,9 @@ func resolveGenerationGroup(c *gin.Context, modelName, usingGroup string) string
 	var channelType *int
 	if isVideoGenerationSubmit(c) {
 		videoType := constant.ChannelTypeFZYingheVideo
+		if common.IsXAIVideoGenerationModel(modelName) {
+			videoType = constant.ChannelTypeXai
+		}
 		channelType = &videoType
 	}
 	for _, group := range orderedGroups {

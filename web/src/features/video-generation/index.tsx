@@ -94,6 +94,7 @@ function inferredModelKind(modelName: string): VideoModelKind {
   const normalized = modelName.trim().toLowerCase()
   if (normalized === 'kling-v3') return 'kling-v3'
   if (normalized === 'kling-v3-omni') return 'kling-v3-omni'
+  if (normalized.startsWith('grok-imagine-video')) return 'grok-video'
   if (normalized.includes('seedance')) return 'seedance'
   return 'unknown'
 }
@@ -118,7 +119,11 @@ function inferredModelTier(modelName: string): VideoTier {
 }
 
 function minimumDurationForKind(kind: VideoModelKind): number {
-  return kind === 'kling-v3' || kind === 'kling-v3-omni' ? 3 : 4
+  return kind === 'kling-v3' ||
+    kind === 'kling-v3-omni' ||
+    kind === 'grok-video'
+    ? 3
+    : 4
 }
 
 function isKlingKind(kind: VideoModelKind): boolean {
@@ -138,6 +143,7 @@ function inferredBillingMode(modelName: string): VideoBillingMode {
 }
 
 const KLING_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const
+const GROK_ASPECT_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4'] as const
 const MAX_VIDEO_REFERENCE_IMAGES = 4
 const MAX_VIDEO_REFERENCE_IMAGE_SIZE = 10 * 1024 * 1024
 const VIDEO_REFERENCE_IMAGE_TYPES = new Set([
@@ -158,6 +164,7 @@ function aspectRatiosForKind(kind: VideoModelKind): VideoAspectRatio[] {
   if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
     return [...KLING_ASPECT_RATIOS]
   }
+  if (kind === 'grok-video') return [...GROK_ASPECT_RATIOS]
   return [...VIDEO_ASPECT_RATIOS]
 }
 
@@ -267,6 +274,7 @@ function resolutionsForModel(
   if (kind === 'kling-v3' || kind === 'kling-v3-omni') {
     return ['720p', '1080p', '4K']
   }
+  if (kind === 'grok-video') return ['480p', '720p']
   return tier === 'standard'
     ? ['480p', '720p', '1080p', '4K']
     : ['480p', '720p']
@@ -303,6 +311,30 @@ function estimateKlingPrice(
     )
   }
   return 0
+}
+
+function estimateVideoPricePerSecond(
+  kind: VideoModelKind,
+  tier: VideoTier,
+  resolution: VideoResolution,
+  audio: boolean,
+  referenceUrls: string,
+  configuredPrice?: number
+): number {
+  if (Number.isFinite(configuredPrice)) return configuredPrice ?? 0
+  if (isKlingKind(kind)) {
+    return estimateKlingPrice(kind, resolution, audio, referenceUrls)
+  }
+  if (kind === 'grok-video') return 0.2
+  return PRICE_PER_SECOND[tier][resolution] ?? 0
+}
+
+function audioDescriptionForKind(kind: VideoModelKind): string {
+  if (kind === 'grok-video') {
+    return 'Grok video includes audio by default; the toggle is not configurable'
+  }
+  if (isKlingKind(kind)) return 'Audio changes the listed price'
+  return 'Audio does not change the listed price'
 }
 
 function progressValue(progress: string): number {
@@ -762,6 +794,8 @@ export function VideoGeneration() {
   const selectedTier = selectedModel?.tier ?? inferredModelTier(model)
   const selectedBillingMode =
     selectedModel?.billing_mode ?? inferredBillingMode(model)
+  const isGrokVideo = selectedKind === 'grok-video'
+  const maxReferenceImages = isGrokVideo ? 3 : MAX_VIDEO_REFERENCE_IMAGES
   const allowedResolutions = useMemo(
     () =>
       resolutionsForModel(
@@ -819,6 +853,15 @@ export function VideoGeneration() {
     }
   }, [form, klingOmniReferenceVideo])
 
+  useEffect(() => {
+    if (isGrokVideo && form.getValues('mode') === 'start_end_frame') {
+      form.setValue('mode', 'text_with_reference', {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+  }, [form, isGrokVideo])
+
   const applyModelDefaults = (nextModel: string) => {
     const nextSelectedModel = modelsQuery.data?.find(
       (item) => item.id === nextModel
@@ -858,6 +901,15 @@ export function VideoGeneration() {
         shouldValidate: true,
       })
     }
+    if (
+      nextKind === 'grok-video' &&
+      form.getValues('mode') === 'start_end_frame'
+    ) {
+      form.setValue('mode', 'text_with_reference', {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
     const nextMinimumDuration = minimumDurationForKind(nextKind)
     if (
       Number.isFinite(currentDuration) &&
@@ -871,15 +923,33 @@ export function VideoGeneration() {
   }
 
   const estimatedPrice = useMemo(() => {
-    const pricePerSecond = isKlingKind(selectedKind)
-      ? estimateKlingPrice(selectedKind, resolution, audio, referenceUrls)
-      : (PRICE_PER_SECOND[selectedTier][resolution] ?? 0)
+    const pricePerSecond = estimateVideoPricePerSecond(
+      selectedKind,
+      selectedTier,
+      resolution,
+      audio,
+      referenceUrls,
+      selectedModel?.price_per_second
+    )
     return pricePerSecond * (Number.isFinite(duration) ? duration : 0)
-  }, [audio, duration, referenceUrls, resolution, selectedKind, selectedTier])
+  }, [
+    audio,
+    duration,
+    referenceUrls,
+    resolution,
+    selectedKind,
+    selectedModel?.price_per_second,
+    selectedTier,
+  ])
 
-  const estimatedPricePerSecond = isKlingKind(selectedKind)
-    ? estimateKlingPrice(selectedKind, resolution, audio, referenceUrls)
-    : (PRICE_PER_SECOND[selectedTier][resolution] ?? 0)
+  const estimatedPricePerSecond = estimateVideoPricePerSecond(
+    selectedKind,
+    selectedTier,
+    resolution,
+    audio,
+    referenceUrls,
+    selectedModel?.price_per_second
+  )
 
   const currentTaskQuery = useQuery({
     queryKey: ['video-task', currentTaskId],
@@ -948,11 +1018,21 @@ export function VideoGeneration() {
       )
       return
     }
-    if (referenceFiles.length > MAX_VIDEO_REFERENCE_IMAGES) {
-      toast.error(t('Select no more than 4 reference images'))
+    if (referenceFiles.length > maxReferenceImages) {
+      toast.error(
+        t('Select no more than {{count}} reference images', {
+          count: maxReferenceImages,
+        })
+      )
       return
     }
     const isKling = isKlingKind(selectedKind)
+    if (isGrokVideo && values.mode === 'start_end_frame') {
+      toast.error(
+        t('Grok video does not support separate start and end frames')
+      )
+      return
+    }
     if (!allowedResolutions.includes(values.resolution)) {
       toast.error(
         t('Resolution {{resolution}} is not supported by the selected model', {
@@ -1268,9 +1348,11 @@ export function VideoGeneration() {
                             <NativeSelectOption value='text_with_reference'>
                               {t('Text with references')}
                             </NativeSelectOption>
-                            <NativeSelectOption value='start_end_frame'>
-                              {t('Start and end frames')}
-                            </NativeSelectOption>
+                            {!isGrokVideo && (
+                              <NativeSelectOption value='start_end_frame'>
+                                {t('Start and end frames')}
+                              </NativeSelectOption>
+                            )}
                           </NativeSelect>
                         </FormControl>
                         {isKlingKind(selectedKind) && (
@@ -1297,18 +1379,13 @@ export function VideoGeneration() {
                               {t('Generate audio')}
                             </FormLabel>
                             <FormDescription>
-                              {t(
-                                selectedKind === 'kling-v3' ||
-                                  selectedKind === 'kling-v3-omni'
-                                  ? 'Audio changes the listed price'
-                                  : 'Audio does not change the listed price'
-                              )}
+                              {t(audioDescriptionForKind(selectedKind))}
                             </FormDescription>
                           </div>
                           <FormControl>
                             <Switch
                               checked={field.value}
-                              disabled={klingOmniReferenceVideo}
+                              disabled={klingOmniReferenceVideo || isGrokVideo}
                               onCheckedChange={field.onChange}
                             />
                           </FormControl>
@@ -1343,9 +1420,14 @@ export function VideoGeneration() {
                                 )
                               ).values(),
                             ]
-                            if (next.length > MAX_VIDEO_REFERENCE_IMAGES) {
+                            if (next.length > maxReferenceImages) {
                               toast.error(
-                                t('Select no more than 4 reference images')
+                                t(
+                                  'Select no more than {{count}} reference images',
+                                  {
+                                    count: maxReferenceImages,
+                                  }
+                                )
                               )
                               return
                             }
@@ -1376,7 +1458,8 @@ export function VideoGeneration() {
                       </FormControl>
                       <FormDescription>
                         {t(
-                          'Upload up to 4 static JPG, PNG, or WEBP images, up to 10 MiB each. Select files again to append.'
+                          'Upload up to {{count}} static JPG, PNG, or WEBP images, up to 10 MiB each. Select files again to append.',
+                          { count: maxReferenceImages }
                         )}
                         {referenceFiles.length > 0 && (
                           <span className='ml-1'>

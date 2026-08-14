@@ -25,6 +25,9 @@ var (
 		"qwen-image",
 		"hunyuan-image",
 	}
+	XAIVideoGenerationModels = []string{
+		"grok-imagine-video",
+	}
 	OpenAITextModels = []string{
 		"gpt-",
 		"o1",
@@ -50,6 +53,16 @@ func IsImageGenerationModel(modelName string) bool {
 			return true
 		}
 		if strings.HasPrefix(m, "prefix:") && strings.HasPrefix(modelName, strings.TrimPrefix(m, "prefix:")) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsXAIVideoGenerationModel(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	for _, candidate := range XAIVideoGenerationModels {
+		if modelName == candidate || strings.HasPrefix(modelName, candidate+"-") {
 			return true
 		}
 	}

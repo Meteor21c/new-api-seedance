@@ -136,9 +136,27 @@ export async function getVideoContent(
 }
 
 export async function getVideoTasks(): Promise<VideoTaskListResponse> {
-  const response = await api.get<VideoTaskListResponse>(
-    '/api/task/self?p=1&page_size=12&platform=59',
-    { disableDuplicate: true }
+  const responses = await Promise.all(
+    ['59', '48'].map((platform) =>
+      api.get<VideoTaskListResponse>('/api/task/self', {
+        params: { p: 1, page_size: 12, platform },
+        disableDuplicate: true,
+      })
+    )
   )
-  return response.data
+  const payloads = responses.map((response) => response.data)
+  const items = payloads
+    .flatMap((payload) => payload.data?.items ?? [])
+    .sort((left, right) => right.submit_time - left.submit_time)
+    .slice(0, 12)
+  return {
+    success: payloads.every((payload) => payload.success),
+    data: {
+      items,
+      total: payloads.reduce(
+        (sum, payload) => sum + (payload.data?.total ?? 0),
+        0
+      ),
+    },
+  }
 }
