@@ -11,7 +11,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var presignGeneratedImageObject = service.PresignGeneratedImageObject
+var (
+	presignGeneratedImageObject = service.PresignGeneratedImageObject
+	openMaterialObject          = service.OpenMaterialObject
+)
 
 func CreateMaterialUpload(c *gin.Context) {
 	var request service.MaterialUploadRequest
@@ -74,7 +77,7 @@ func MaterialContent(c *gin.Context) {
 		return
 	}
 
-	object, err := service.OpenMaterialObject(c.Request.Context(), materialID, fileName)
+	object, err := openMaterialObject(c.Request.Context(), materialID, fileName)
 	if err != nil {
 		common.SysLog("open public material: " + err.Error())
 		c.Status(http.StatusNotFound)

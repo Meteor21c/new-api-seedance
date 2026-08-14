@@ -94,21 +94,28 @@ func TestBuildGeneratedImagePublicURL(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestGeneratedImageRedirectRejectsUploadedMaterialBeforeOSSAccess(t *testing.T) {
+func TestGeneratedImageRedirectRejectsNonOriginalMaterialBeforeOSSAccess(t *testing.T) {
 	t.Setenv("MATERIAL_OSS_REGION", "cn-test")
 	t.Setenv("MATERIAL_OSS_BUCKET", "test-bucket")
-	token, err := encodeMaterialToken(materialToken{
-		Version:     1,
-		UserID:      42,
-		ObjectKey:   "temp-materials/42/upload.png",
-		ContentType: "image/png",
-		SizeBytes:   1234,
-		ExpiresAt:   time.Now().Add(time.Hour).Unix(),
-	})
-	require.NoError(t, err)
+	for _, objectKey := range []string{
+		"temp-materials/42/upload.jpg",
+		"temp-materials/42/preview/result.jpg",
+	} {
+		t.Run(objectKey, func(t *testing.T) {
+			token, err := encodeMaterialToken(materialToken{
+				Version:     1,
+				UserID:      42,
+				ObjectKey:   objectKey,
+				ContentType: "image/jpeg",
+				SizeBytes:   1234,
+				ExpiresAt:   time.Now().Add(time.Hour).Unix(),
+			})
+			require.NoError(t, err)
 
-	_, err = PresignGeneratedImageObject(context.Background(), token, "material.png")
-	assert.ErrorContains(t, err, "not a generated image")
+			_, err = PresignGeneratedImageObject(context.Background(), token, "material.jpg")
+			assert.ErrorContains(t, err, "not a generated image")
+		})
+	}
 }
 
 func TestValidateMaterialMetadata(t *testing.T) {

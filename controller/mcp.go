@@ -397,15 +397,28 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 			"mime_type": mimeType,
 			"source":    strings.TrimSuffix(source, "_json"),
 		}
-		asset, storeErr := storeMCPGeneratedImage(ctx, userID, original, mimeType)
+		previewData, previewMimeType, previewErr := makeMCPImagePreview(original)
+		var previewBytes []byte
+		if previewErr == nil {
+			previewBytes, previewErr = base64.StdEncoding.DecodeString(previewData)
+		}
+		asset, storeErr := storeMCPGeneratedImage(ctx, userID, original, mimeType, previewBytes, previewMimeType)
 		if storeErr == nil && asset != nil && strings.TrimSpace(asset.URL) != "" {
 			metadata["download_url"] = asset.URL
 			metadata["expires_at"] = asset.ExpiresAt
+			inlineURL := asset.URL
+			if strings.TrimSpace(asset.PreviewURL) != "" {
+				inlineURL = asset.PreviewURL
+				metadata["preview_url"] = asset.PreviewURL
+			}
+			if strings.TrimSpace(asset.PreviewWarning) != "" {
+				metadata["preview_warning"] = asset.PreviewWarning
+			}
 			imageNumber := len(imageMetadata) + 1
 			finalResponseMarkdown = append(finalResponseMarkdown, fmt.Sprintf(
 				"![Generated image %d](%s)\n\n[Open or download original image %d](%s)",
 				imageNumber,
-				asset.URL,
+				inlineURL,
 				imageNumber,
 				asset.URL,
 			))
@@ -430,7 +443,6 @@ func newMCPImageResult(ctx context.Context, userID int, structured map[string]an
 		} else if storeErr != nil {
 			metadata["delivery_warning"] = storeErr.Error()
 		}
-		previewData, previewMimeType, previewErr := makeMCPImagePreview(original)
 		if previewErr == nil {
 			imageContents = append(imageContents, mcpContent{
 				Type:     "image",
@@ -663,13 +675,13 @@ func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
 }
 
 func mcpImageCacheKey(requestHash string) string {
-	// v4 results keep native image blocks first and also provide final-response
-	// Markdown with an inline image plus an original-file fallback link.
-	return "mcp:image:result:v4:" + requestHash
+	// v5 results use a direct 200 response for the bounded Markdown preview and
+	// keep the redirecting OSS URL only as the original-file fallback link.
+	return "mcp:image:result:v5:" + requestHash
 }
 
 func mcpImageInflightKey(requestHash string) string {
-	return "mcp:image:inflight:v4:" + requestHash
+	return "mcp:image:inflight:v5:" + requestHash
 }
 
 func getCachedMCPImageResult(requestHash string) (mcpToolResult, bool) {

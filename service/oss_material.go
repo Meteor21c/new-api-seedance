@@ -71,9 +71,12 @@ type MaterialObject struct {
 }
 
 type GeneratedImageAsset struct {
-	URL       string `json:"url"`
-	ExpiresAt int64  `json:"expires_at"`
-	MimeType  string `json:"mime_type"`
+	URL             string `json:"url"`
+	PreviewURL      string `json:"preview_url,omitempty"`
+	ExpiresAt       int64  `json:"expires_at"`
+	MimeType        string `json:"mime_type"`
+	PreviewMimeType string `json:"preview_mime_type,omitempty"`
+	PreviewWarning  string `json:"preview_warning,omitempty"`
 }
 
 type GeneratedImageRedirect struct {
@@ -311,14 +314,21 @@ func OpenMaterialObjectForUser(ctx context.Context, userID int, materialID strin
 	return OpenMaterialObject(ctx, materialID, "material"+extension)
 }
 
-// StoreGeneratedImage keeps a generated original in private OSS and returns a
-// short, opaque New API delivery URL when a public base URL is configured. The
-// delivery handler redirects browser/Codex downloads to a brief OSS signature,
-// with the previous application stream retained as a reliability fallback. A
-// direct OSS signed URL remains the fallback when a public base URL is not
-// configured. The existing temp-materials lifecycle rule cleans the object
+// StoreGeneratedImage keeps a generated original and its bounded preview in
+// private OSS. The original delivery URL redirects to OSS, while the preview
+// URL is streamed directly by New API because some Codex renderers do not load
+// cross-origin redirects inside Markdown images. Only the small preview uses
+// application bandwidth; original downloads continue to bypass the server.
+// The existing temp-materials lifecycle rule cleans both objects
 // asynchronously.
-func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeType string) (*GeneratedImageAsset, error) {
+func StoreGeneratedImage(
+	ctx context.Context,
+	userID int,
+	payload []byte,
+	mimeType string,
+	preview []byte,
+	previewMimeType string,
+) (*GeneratedImageAsset, error) {
 	if userID <= 0 {
 		return nil, errors.New("authenticated user is required")
 	}
@@ -366,11 +376,12 @@ func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeTy
 		int64(len(payload)),
 		expiresAt,
 	); ok {
-		return &GeneratedImageAsset{
+		asset := &GeneratedImageAsset{
 			URL:       publicURL,
 			ExpiresAt: expiresAt.Unix(),
 			MimeType:  mimeType,
-		}, nil
+		}
+		return storeGeneratedImagePreview(ctx, cfg, client, asset, userID, preview, previewMimeType, expiresAt), nil
 	}
 
 	result, err := client.Presign(ctx, &oss.GetObjectRequest{
@@ -381,11 +392,73 @@ func StoreGeneratedImage(ctx context.Context, userID int, payload []byte, mimeTy
 		return nil, fmt.Errorf("create generated image download signature: %w", err)
 	}
 
-	return &GeneratedImageAsset{
+	asset := &GeneratedImageAsset{
 		URL:       result.URL,
 		ExpiresAt: result.Expiration.Unix(),
 		MimeType:  mimeType,
-	}, nil
+	}
+	return storeGeneratedImagePreview(ctx, cfg, client, asset, userID, preview, previewMimeType, expiresAt), nil
+}
+
+func storeGeneratedImagePreview(
+	ctx context.Context,
+	cfg materialStorageConfig,
+	client *oss.Client,
+	asset *GeneratedImageAsset,
+	userID int,
+	payload []byte,
+	mimeType string,
+	expiresAt time.Time,
+) *GeneratedImageAsset {
+	if asset == nil || len(payload) == 0 {
+		return asset
+	}
+	if len(payload) > 2*1024*1024 {
+		asset.PreviewWarning = "generated preview exceeds the 2 MiB delivery limit"
+		return asset
+	}
+	mimeType, extension, err := normalizeGeneratedImageType(mimeType, payload)
+	if err != nil {
+		asset.PreviewWarning = err.Error()
+		return asset
+	}
+	objectKey := cfg.Prefix + strconv.Itoa(userID) + "/preview/" + uuid.NewString() + extension
+	_, err = client.PutObject(ctx, &oss.PutObjectRequest{
+		Bucket:             oss.Ptr(cfg.Bucket),
+		Key:                oss.Ptr(objectKey),
+		Body:               bytes.NewReader(payload),
+		ContentLength:      oss.Ptr(int64(len(payload))),
+		ContentType:        oss.Ptr(mimeType),
+		ContentDisposition: oss.Ptr("inline"),
+		CacheControl:       oss.Ptr("private, max-age=86400"),
+		ForbidOverwrite:    oss.Ptr("true"),
+	})
+	if err != nil {
+		asset.PreviewWarning = "store generated preview in OSS: " + err.Error()
+		return asset
+	}
+	previewURL, ok := buildGeneratedImagePublicURL(
+		cfg,
+		userID,
+		objectKey,
+		mimeType,
+		int64(len(payload)),
+		expiresAt,
+	)
+	if !ok {
+		result, presignErr := client.Presign(ctx, &oss.GetObjectRequest{
+			Bucket: oss.Ptr(cfg.Bucket),
+			Key:    oss.Ptr(objectKey),
+		}, oss.PresignExpires(time.Until(expiresAt)))
+		if presignErr != nil {
+			asset.PreviewWarning = "create generated preview URL: " + presignErr.Error()
+			return asset
+		}
+		previewURL = result.URL
+	}
+	asset.PreviewURL = previewURL
+	asset.PreviewMimeType = mimeType
+	return asset
 }
 
 // PresignGeneratedImageObject turns the short application delivery URL into a

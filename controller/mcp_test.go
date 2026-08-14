@@ -148,14 +148,18 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 		mcpInternalHandler = originalHandler
 		storeMCPGeneratedImage = originalStore
 	})
-	storeMCPGeneratedImage = func(_ context.Context, userID int, payload []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+	storeMCPGeneratedImage = func(_ context.Context, userID int, payload []byte, mimeType string, preview []byte, previewMimeType string) (*service.GeneratedImageAsset, error) {
 		assert.Equal(t, 42, userID)
 		assert.NotEmpty(t, payload)
 		assert.Equal(t, "image/png", mimeType)
+		assert.NotEmpty(t, preview)
+		assert.Equal(t, "image/jpeg", previewMimeType)
 		return &service.GeneratedImageAsset{
-			URL:       "https://oss.example/generated/original.png?signature=test",
-			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
-			MimeType:  mimeType,
+			URL:             "https://api.example.com/generated/original.png?signature=test",
+			PreviewURL:      "https://api.example.com/generated/preview.jpg?signature=test",
+			ExpiresAt:       time.Now().Add(24 * time.Hour).Unix(),
+			MimeType:        mimeType,
+			PreviewMimeType: previewMimeType,
 		}, nil
 	}
 
@@ -178,7 +182,10 @@ func TestMCPCreateImageCallsInternalAPI(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), `"type":"resource_link"`)
-	assert.Contains(t, recorder.Body.String(), `"download_url":"https://oss.example/generated/original.png?signature=test"`)
+	assert.Contains(t, recorder.Body.String(), `"download_url":"https://api.example.com/generated/original.png?signature=test"`)
+	assert.Contains(t, recorder.Body.String(), `"preview_url":"https://api.example.com/generated/preview.jpg?signature=test"`)
+	assert.Contains(t, recorder.Body.String(), `![Generated image 1](https://api.example.com/generated/preview.jpg?signature=test)`)
+	assert.Contains(t, recorder.Body.String(), `[Open or download original image 1](https://api.example.com/generated/original.png?signature=test)`)
 	assert.Contains(t, recorder.Body.String(), `"type":"image"`)
 	assert.Contains(t, recorder.Body.String(), `"mimeType":"image/jpeg"`)
 	assert.Contains(t, recorder.Body.String(), `"data":"/9j/`)
@@ -222,7 +229,7 @@ func TestMCPCreateImageSupportsURLData(t *testing.T) {
 		assert.Equal(t, maxMCPGeneratedImageFetchBytes, maxBytes)
 		return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", nil
 	}
-	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string, _ []byte, _ string) (*service.GeneratedImageAsset, error) {
 		return &service.GeneratedImageAsset{URL: "https://api.example.com/generated.png", ExpiresAt: time.Now().Add(time.Hour).Unix(), MimeType: mimeType}, nil
 	}
 
@@ -287,7 +294,7 @@ func TestMCPCreateImageWithReferenceUsesImageEdit(t *testing.T) {
 			Body: io.NopCloser(bytes.NewReader([]byte("png"))),
 		}, nil
 	}
-	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string, _ []byte, _ string) (*service.GeneratedImageAsset, error) {
 		return &service.GeneratedImageAsset{URL: "https://oss.example/generated/edit.png", ExpiresAt: time.Now().Add(time.Hour).Unix(), MimeType: mimeType}, nil
 	}
 	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -329,7 +336,7 @@ func TestMCPCreateImageDeduplicatesRecentIdenticalRequest(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"created":1,"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}]}`))
 	})
-	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string) (*service.GeneratedImageAsset, error) {
+	storeMCPGeneratedImage = func(_ context.Context, _ int, _ []byte, mimeType string, _ []byte, _ string) (*service.GeneratedImageAsset, error) {
 		return &service.GeneratedImageAsset{URL: "https://oss.example/generated/once.png", ExpiresAt: time.Now().Add(time.Hour).Unix(), MimeType: mimeType}, nil
 	}
 	body := `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-plus","prompt":"A hamster eating watermelon"}}}`
@@ -353,8 +360,8 @@ func TestMCPCreateImageDeduplicatesRecentIdenticalRequest(t *testing.T) {
 }
 
 func TestMCPImageCacheKeysAreVersioned(t *testing.T) {
-	assert.Equal(t, "mcp:image:result:v4:request", mcpImageCacheKey("request"))
-	assert.Equal(t, "mcp:image:inflight:v4:request", mcpImageInflightKey("request"))
+	assert.Equal(t, "mcp:image:result:v5:request", mcpImageCacheKey("request"))
+	assert.Equal(t, "mcp:image:inflight:v5:request", mcpImageInflightKey("request"))
 }
 
 func TestMakeMCPImagePreviewBoundsLargePayload(t *testing.T) {
