@@ -20,13 +20,16 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Coins,
   Copy,
   Clock3,
   Download,
   ExternalLink,
   Film,
+  Gauge,
   ImagePlus,
   LoaderCircle,
+  Sparkles,
   Volume2,
   X,
 } from 'lucide-react'
@@ -225,6 +228,18 @@ const videoFormSchema = z
 
 type VideoFormValues = z.infer<typeof videoFormSchema>
 
+type VideoTaskPresentation = {
+  prompt: string
+  model: string
+  resolution: string
+  duration?: number
+  aspectRatio: string
+  mode: string
+  audio?: boolean
+}
+
+type VideoTaskPresentationMap = Record<string, VideoTaskPresentation>
+
 const PRICE_PER_SECOND: Record<
   VideoTier,
   Partial<Record<VideoResolution, number>>
@@ -366,6 +381,79 @@ function statusVariant(status: string) {
   if (status === 'SUCCESS') return 'default' as const
   if (status === 'FAILURE') return 'destructive' as const
   return 'secondary' as const
+}
+
+function taskStatusTranslationKey(status: string): string {
+  if (status === 'SUCCESS') return 'Completed'
+  if (status === 'FAILURE') return 'Failed'
+  if (status === 'QUEUED') return 'Queued'
+  if (status === 'SUBMITTED' || status === 'NOT_START') return 'Submitted'
+  return 'In progress'
+}
+
+function resolveTaskPresentation(
+  task: VideoTask,
+  local?: VideoTaskPresentation
+): VideoTaskPresentation {
+  return {
+    prompt: local?.prompt || task.properties?.input?.trim() || '',
+    model: local?.model || task.properties?.origin_model_name?.trim() || '',
+    resolution: local?.resolution || task.properties?.resolution?.trim() || '',
+    duration: local?.duration || task.properties?.duration || undefined,
+    aspectRatio:
+      local?.aspectRatio || task.properties?.aspect_ratio?.trim() || '',
+    mode: local?.mode || task.properties?.mode?.trim() || '',
+    audio: local?.audio ?? task.properties?.audio,
+  }
+}
+
+function TaskParameterBadges({
+  presentation,
+}: {
+  presentation: VideoTaskPresentation
+}) {
+  const { t } = useTranslation()
+  let modeLabel = presentation.mode
+  if (presentation.mode === 'start_end_frame') {
+    modeLabel = t('Start and end frames')
+  } else if (presentation.mode === 'text_with_reference') {
+    modeLabel = t('Text with references')
+  }
+
+  return (
+    <div className='flex flex-wrap gap-2'>
+      {presentation.model && (
+        <Badge className='max-w-full font-normal' variant='secondary'>
+          <span className='truncate'>{presentation.model}</span>
+        </Badge>
+      )}
+      {presentation.resolution && (
+        <Badge className='font-normal' variant='outline'>
+          {presentation.resolution}
+        </Badge>
+      )}
+      {presentation.duration !== undefined && (
+        <Badge className='font-normal' variant='outline'>
+          {presentation.duration} {t('second')}
+        </Badge>
+      )}
+      {presentation.aspectRatio && (
+        <Badge className='font-normal' variant='outline'>
+          {presentation.aspectRatio}
+        </Badge>
+      )}
+      {modeLabel && (
+        <Badge className='font-normal' variant='outline'>
+          {modeLabel}
+        </Badge>
+      )}
+      {presentation.audio !== undefined && (
+        <Badge className='font-normal' variant='outline'>
+          {presentation.audio ? t('Audio on') : t('Audio off')}
+        </Badge>
+      )}
+    </div>
+  )
 }
 
 function errorMessage(error: unknown): string {
@@ -624,37 +712,77 @@ function useAuthenticatedVideoURL(task: VideoTask) {
   }
 }
 
-function VideoResult({ task }: { task: VideoTask }) {
+function VideoResult({
+  task,
+  localPresentation,
+}: {
+  task: VideoTask
+  localPresentation?: VideoTaskPresentation
+}) {
   const { t } = useTranslation()
   const failureHint = upstreamFailureHint(task.fail_reason || '')
   const video = useAuthenticatedVideoURL(task)
+  const presentation = resolveTaskPresentation(task, localPresentation)
+  const showUsage = Boolean(task.total_tokens)
+  const showCharge = task.billing_amount !== undefined
 
   return (
     <div className='space-y-4'>
       <div className='flex flex-wrap items-center justify-between gap-2'>
-        <div className='flex items-center gap-2'>
-          <Badge variant={statusVariant(task.status)}>{t(task.status)}</Badge>
-          <span className='text-muted-foreground font-mono text-xs'>
-            {task.task_id}
-          </span>
-        </div>
+        <Badge variant={statusVariant(task.status)}>
+          {t(taskStatusTranslationKey(task.status))}
+        </Badge>
         <span className='text-muted-foreground text-xs'>
           {taskTimestamp(task)}
         </span>
       </div>
 
-      {task.status === 'SUCCESS' && Boolean(task.total_tokens) && (
-        <div className='bg-muted/50 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs'>
-          <span className='text-muted-foreground'>
-            {t('Actual usage: {{tokens}} Tokens', {
-              tokens: task.total_tokens?.toLocaleString(),
-            })}
-          </span>
-          <span className='font-medium tabular-nums'>
-            {t('Actual charge: ¥{{amount}}', {
-              amount: (task.billing_amount ?? 0).toFixed(4),
-            })}
-          </span>
+      <div className='border-primary/15 from-primary/5 rounded-lg border bg-gradient-to-br to-transparent p-4'>
+        <div className='text-muted-foreground mb-2 flex items-center gap-2 text-xs font-medium'>
+          <Sparkles className='text-primary size-4' />
+          {t('Generation prompt')}
+        </div>
+        <p className='text-sm leading-relaxed whitespace-pre-wrap'>
+          {presentation.prompt ||
+            t('Prompt details were not recorded for this earlier task')}
+        </p>
+      </div>
+
+      <TaskParameterBadges presentation={presentation} />
+
+      {task.status === 'SUCCESS' && (showUsage || showCharge) && (
+        <div className='grid gap-3 sm:grid-cols-2'>
+          {showUsage && (
+            <div className='flex items-center gap-3 rounded-lg border border-sky-200 bg-sky-50/80 p-3 dark:border-sky-900/60 dark:bg-sky-950/30'>
+              <div className='flex size-9 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/60 dark:text-sky-300'>
+                <Gauge className='size-4' />
+              </div>
+              <div className='min-w-0'>
+                <p className='text-xs font-medium text-sky-700/80 dark:text-sky-300/80'>
+                  {t('Token usage')}
+                </p>
+                <p className='text-base font-semibold text-sky-950 tabular-nums dark:text-sky-50'>
+                  {task.total_tokens?.toLocaleString()}{' '}
+                  <span className='text-xs font-normal'>Tokens</span>
+                </p>
+              </div>
+            </div>
+          )}
+          {showCharge && (
+            <div className='flex items-center gap-3 rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/30'>
+              <div className='flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300'>
+                <Coins className='size-4' />
+              </div>
+              <div className='min-w-0'>
+                <p className='text-xs font-medium text-emerald-700/80 dark:text-emerald-300/80'>
+                  {t('Amount charged')}
+                </p>
+                <p className='text-base font-semibold text-emerald-950 tabular-nums dark:text-emerald-50'>
+                  ¥{(task.billing_amount ?? 0).toFixed(4)}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -758,6 +886,14 @@ export function VideoGeneration() {
   const [localHistory, setLocalHistory] = useState<VideoTask[]>(() =>
     readGenerationHistory<VideoTask>('video-history')
   )
+  const [taskPresentations, setTaskPresentations] =
+    useState<VideoTaskPresentationMap>(() => {
+      return (
+        readGenerationRecord<VideoTaskPresentationMap>(
+          'video-task-presentations'
+        )?.value ?? {}
+      )
+    })
   const [referenceFiles, setReferenceFiles] = useState<File[]>([])
   const [startFrameFile, setStartFrameFile] = useState<File | null>(null)
   const [endFrameFile, setEndFrameFile] = useState<File | null>(null)
@@ -985,12 +1121,28 @@ export function VideoGeneration() {
     writeGenerationHistory('video-history', localHistory)
   }, [localHistory])
 
+  useEffect(() => {
+    writeGenerationRecord('video-task-presentations', taskPresentations)
+  }, [taskPresentations])
+
   const createMutation = useMutation({
     mutationFn: createVideoTracked,
-    onSuccess: (response) => {
+    onSuccess: (response, request) => {
       const taskId = response.task_id || response.id
       setCurrentTaskId(taskId)
       setRestoredTask(null)
+      setTaskPresentations((previous) => ({
+        ...previous,
+        [taskId]: {
+          prompt: request.prompt,
+          model: request.model,
+          resolution: request.resolution,
+          duration: request.duration,
+          aspectRatio: request.aspect_ratio,
+          mode: request.mode,
+          audio: request.audio,
+        },
+      }))
       writeGenerationRecord('video-current-task-id', taskId)
       toast.success(t('Video task submitted'))
       void queryClient.invalidateQueries({ queryKey: ['video-tasks'] })
@@ -1168,11 +1320,6 @@ export function VideoGeneration() {
                 {t('Copy MCP prompt')}
               </Button>
             </CardAction>
-            <CardDescription>
-              {t(
-                'Upload local images directly to temporary OSS storage, or use public HTTP/HTTPS URLs'
-              )}
-            </CardDescription>
           </CardHeader>
           <CardContent>
             <Form {...form}>
@@ -1651,12 +1798,15 @@ export function VideoGeneration() {
             <CardHeader>
               <CardTitle>{t('Current task')}</CardTitle>
               <CardDescription>
-                {t('The page polls task status automatically')}
+                {t('Review the result and parameters used for this video')}
               </CardDescription>
             </CardHeader>
             <CardContent>
               {currentTask ? (
-                <VideoResult task={currentTask} />
+                <VideoResult
+                  task={currentTask}
+                  localPresentation={taskPresentations[currentTask.task_id]}
+                />
               ) : (
                 <div className='text-muted-foreground flex min-h-52 flex-col items-center justify-center gap-3 text-center'>
                   <Film className='size-10 opacity-40' />
@@ -1693,9 +1843,7 @@ export function VideoGeneration() {
             <CardHeader>
               <CardTitle>{t('Recent video tasks')}</CardTitle>
               <CardDescription>
-                {t(
-                  'Your latest video generation requests are kept in this browser for up to 24 hours'
-                )}
+                {t('Review or save your latest generated videos')}
               </CardDescription>
             </CardHeader>
             <CardContent className='max-h-[38rem] overflow-y-auto'>
@@ -1704,67 +1852,80 @@ export function VideoGeneration() {
                   {t('No video tasks yet')}
                 </p>
               ) : (
-                <div className='divide-y'>
-                  {history.map((task) => (
-                    <div
-                      className='flex flex-col gap-3 py-4 first:pt-0 last:pb-0'
-                      key={task.task_id}
-                    >
-                      <div className='min-w-0 space-y-1'>
-                        <div className='flex flex-wrap items-center gap-2'>
+                <div className='space-y-3'>
+                  {history.map((task) => {
+                    const presentation = resolveTaskPresentation(
+                      task,
+                      taskPresentations[task.task_id]
+                    )
+                    return (
+                      <div
+                        className='bg-muted/20 flex flex-col gap-3 rounded-lg border p-4'
+                        key={task.task_id}
+                      >
+                        <div className='flex flex-wrap items-center justify-between gap-2'>
                           <Badge variant={statusVariant(task.status)}>
-                            {t(task.status)}
+                            {t(taskStatusTranslationKey(task.status))}
                           </Badge>
-                          <span className='truncate font-mono text-xs'>
-                            {task.task_id}
+                          <span className='text-muted-foreground text-xs'>
+                            {taskTimestamp(task)}
                           </span>
                         </div>
-                        <p className='text-muted-foreground truncate text-xs'>
-                          {task.properties?.origin_model_name} ·{' '}
-                          {taskTimestamp(task)}
-                        </p>
-                      </div>
-                      {!TERMINAL_STATUSES.has(task.status) && (
-                        <Progress value={progressValue(task.progress)} />
-                      )}
-                      {task.status === 'FAILURE' && task.fail_reason && (
-                        <p className='text-destructive line-clamp-3 text-xs'>
-                          {task.fail_reason}
-                        </p>
-                      )}
-                      <div className='flex flex-wrap items-center gap-2'>
-                        <Button
-                          className='flex-1'
-                          size='sm'
-                          variant='secondary'
-                          onClick={() => {
-                            setRestoredTask(task)
-                            setCurrentTaskId(task.task_id)
-                          }}
-                        >
-                          {t('View')}
-                        </Button>
-                        {task.status === 'SUCCESS' && (
+                        <div className='min-w-0'>
+                          <div className='text-muted-foreground mb-1 flex items-center gap-1.5 text-xs'>
+                            <Sparkles className='text-primary size-3.5' />
+                            {t('Generation prompt')}
+                          </div>
+                          <p className='line-clamp-2 text-sm leading-relaxed'>
+                            {presentation.prompt ||
+                              t(
+                                'Prompt details were not recorded for this earlier task'
+                              )}
+                          </p>
+                        </div>
+                        <TaskParameterBadges presentation={presentation} />
+                        {!TERMINAL_STATUSES.has(task.status) && (
+                          <Progress value={progressValue(task.progress)} />
+                        )}
+                        {task.status === 'FAILURE' && task.fail_reason && (
+                          <p className='text-destructive line-clamp-3 text-xs'>
+                            {task.fail_reason}
+                          </p>
+                        )}
+                        <div className='flex flex-wrap items-center gap-2'>
                           <Button
                             className='flex-1'
-                            disabled={Boolean(downloadingTaskId)}
                             size='sm'
-                            variant='outline'
-                            onClick={() => void saveVideoTask(task)}
+                            variant='secondary'
+                            onClick={() => {
+                              setRestoredTask(task)
+                              setCurrentTaskId(task.task_id)
+                            }}
                           >
-                            {downloadingTaskId === task.task_id ? (
-                              <LoaderCircle className='animate-spin' />
-                            ) : (
-                              <Download />
-                            )}
-                            {downloadingTaskId === task.task_id
-                              ? t('Saving video')
-                              : t('Save video')}
+                            {t('View')}
                           </Button>
-                        )}
+                          {task.status === 'SUCCESS' && (
+                            <Button
+                              className='flex-1'
+                              disabled={Boolean(downloadingTaskId)}
+                              size='sm'
+                              variant='outline'
+                              onClick={() => void saveVideoTask(task)}
+                            >
+                              {downloadingTaskId === task.task_id ? (
+                                <LoaderCircle className='animate-spin' />
+                              ) : (
+                                <Download />
+                              )}
+                              {downloadingTaskId === task.task_id
+                                ? t('Saving video')
+                                : t('Save video')}
+                            </Button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </CardContent>

@@ -112,6 +112,11 @@ export interface VideoTask {
   properties?: {
     input?: string
     origin_model_name?: string
+    resolution?: string
+    duration?: number
+    aspect_ratio?: string
+    mode?: string
+    audio?: boolean
   }
 }
 

@@ -157,14 +157,6 @@ func GetUserGenerationModels(c *gin.Context) {
 			groups,
 			constant.ChannelTypeFZYingheVideo,
 		)
-		if err == nil {
-			var xaiBindings []model.EnabledChannelModel
-			xaiBindings, err = model.GetEnabledChannelModelsForGroupsByType(
-				groups,
-				constant.ChannelTypeXai,
-			)
-			bindings = append(bindings, xaiBindings...)
-		}
 	case "image":
 		bindings, err = model.GetEnabledChannelModelsForGroups(groups)
 	default:
@@ -198,10 +190,6 @@ func GetUserGenerationModels(c *gin.Context) {
 		upstreamName := mappedGenerationModel(binding)
 		item := generationModel{ID: name}
 		if kind == "video" {
-			if binding.ChannelType == constant.ChannelTypeXai &&
-				!common.IsXAIVideoGenerationModel(upstreamName) {
-				continue
-			}
 			item.Tier = videoModelTier(upstreamName)
 			item.Kind = videoModelKind(upstreamName)
 			item.PricingReference = upstreamName

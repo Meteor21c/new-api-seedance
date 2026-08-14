@@ -212,7 +212,7 @@ func TestGetUserGenerationModelsReportsTokenBillingMetadata(t *testing.T) {
 	}}, response.Data)
 }
 
-func TestGetUserGenerationModelsIncludesOnlyXAIVideoModels(t *testing.T) {
+func TestGetUserGenerationModelsExcludesXAIVideoModels(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&model.User{
 		Id:       1,
@@ -227,16 +227,7 @@ func TestGetUserGenerationModelsIncludesOnlyXAIVideoModels(t *testing.T) {
 	insertGenerationModelBinding(t, 2, constant.ChannelTypeXai, "grok-4-1-fast", "")
 
 	response := requestGenerationModels(t, "video")
-	require.Len(t, response.Data, 1)
-	item := response.Data[0]
-	require.Equal(t, "grok-imagine-video", item.ID)
-	require.Equal(t, "standard", item.Tier)
-	require.Equal(t, "grok-video", item.Kind)
-	require.Equal(t, "per-second", item.BillingMode)
-	require.Equal(t, []string{"480p", "720p"}, item.Resolutions)
-	require.Equal(t, "grok-imagine-video", item.PricingReference)
-	require.NotNil(t, item.PricePerSecond)
-	require.InDelta(t, 0.2, *item.PricePerSecond, 0.000001)
+	require.Empty(t, response.Data)
 }
 
 func TestGetUserGenerationModelsFiltersMappedImageModels(t *testing.T) {
