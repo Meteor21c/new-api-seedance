@@ -808,7 +808,6 @@ export function VideoGeneration() {
     queryKey: ['video-generation-models'],
     queryFn: getVideoModels,
     retry: false,
-    refetchInterval: 30_000,
   })
   const selectedModel = modelsQuery.data?.find((item) => item.id === model)
   const selectedKind = modelKindForSelection(model, selectedModel?.kind)
