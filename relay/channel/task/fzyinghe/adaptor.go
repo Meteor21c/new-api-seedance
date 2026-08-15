@@ -28,24 +28,26 @@ import (
 )
 
 const (
-	ChannelName          = "fzyinghe-video"
-	requestContextKey    = "fzyinghe_video_request"
-	defaultResolution    = "720p"
-	defaultAspectRatio   = "9:16"
-	klingAspectRatio     = "16:9"
-	defaultDuration      = 15
-	defaultMode          = "text_with_reference"
-	minDuration          = 4
-	minKlingDuration     = 3
-	maxDuration          = 15
-	maxPromptCharacters  = 1300
-	maxReferenceImages   = 9
-	maxReferenceAudio    = 3
-	maxReferenceVideos   = 3
-	taskEndpointPath     = "/video/generation/tasks"
-	referencePrefix      = "reference:"
-	startReferencePrefix = "start:"
-	endReferencePrefix   = "end:"
+	ChannelName            = "fzyinghe-video"
+	requestContextKey      = "fzyinghe_video_request"
+	defaultResolution      = "720p"
+	defaultAspectRatio     = "9:16"
+	klingAspectRatio       = "16:9"
+	defaultDuration        = 15
+	defaultMode            = "text_with_reference"
+	minDuration            = 4
+	minKlingDuration       = 3
+	maxDuration            = 15
+	maxPromptCharacters    = 1300
+	maxReferenceImages     = 9
+	maxReferenceAudio      = 3
+	maxReferenceVideos     = 3
+	taskEndpointPath       = "/video/generation/tasks"
+	seedanceV3EndpointPath = "/v3/video/tasks"
+	seedanceV3APIVersion   = "v3"
+	referencePrefix        = "reference:"
+	startReferencePrefix   = "start:"
+	endReferencePrefix     = "end:"
 )
 
 var ModelList = []string{
@@ -264,6 +266,16 @@ type upstreamTokenUsage struct {
 	TotalTokens  int `json:"totalTokens,omitempty"`
 }
 
+type upstreamV3Content struct {
+	VideoURL     string `json:"video_url,omitempty"`
+	LastFrameURL string `json:"last_frame_url,omitempty"`
+}
+
+type upstreamV3Usage struct {
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+}
+
 // flexibleInt64 accepts the timestamp representation used by the different
 // FZYinghe task endpoints.  The Seedance endpoint currently returns
 // createdAt as a JSON string, while other responses may return a JSON number.
@@ -317,6 +329,8 @@ type upstreamTask struct {
 	URLExpiresAt   string              `json:"url_expires_at,omitempty"`
 	Error          *upstreamError      `json:"error,omitempty"`
 	TokenUsage     *upstreamTokenUsage `json:"tokenUsage,omitempty"`
+	Content        upstreamV3Content   `json:"content,omitempty"`
+	Usage          *upstreamV3Usage    `json:"usage,omitempty"`
 }
 
 type upstreamEnvelope struct {
@@ -358,9 +372,18 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		req.Model = strings.TrimSpace(options.ModelName)
 	}
 	c.Set("task_request", req)
-	req.Model, err = mappedRequestModel(req.Model, c.GetString("model_mapping"))
+	originalModel := req.Model
+	mappedModel, err := mappedRequestModel(originalModel, c.GetString("model_mapping"))
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_model_mapping", http.StatusBadRequest)
+	}
+	// Validate against a supported public model name. V3 may use an official
+	// upstream model code through channel model mapping; that mapped code is
+	// written only when the request body is built.
+	if _, supported := allowedResolutions[mappedModel]; supported {
+		req.Model = mappedModel
+	} else {
+		req.Model = originalModel
 	}
 	if err := resolveMaterialOptions(c, &options); err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_material", http.StatusBadRequest)
@@ -369,6 +392,9 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	payload, err := normalizeRequest(req, options)
 	if err != nil {
 		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if isTokenBilledSeedanceModel(payload.Model) && info != nil {
+		info.TaskAPIVersion = seedanceV3APIVersion
 	}
 	c.Set(requestContextKey, payload)
 	return nil
@@ -458,8 +484,8 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, _ *relaycommon.RelayInfo) 
 	return ratios
 }
 
-func (a *TaskAdaptor) BuildRequestURL(_ *relaycommon.RelayInfo) (string, error) {
-	return tasksEndpoint(a.baseURL), nil
+func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	return tasksEndpointForVersion(a.baseURL, taskAPIVersion(info)), nil
 }
 
 func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
@@ -477,6 +503,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
+	useSeedanceV3 := isTokenBilledSeedanceModel(payload.Model) || taskAPIVersion(info) == seedanceV3APIVersion
 	if info.IsModelMapped {
 		payload.Model = info.UpstreamModelName
 	} else {
@@ -493,7 +520,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		}
 		return bytes.NewReader(encoded), nil
 	}
-	if isTokenBilledSeedanceModel(payload.Model) {
+	if useSeedanceV3 {
 		body, buildErr := buildSeedanceTokenRequest(payload)
 		if buildErr != nil {
 			return nil, buildErr
@@ -560,7 +587,8 @@ func (a *TaskAdaptor) FetchTask(baseURL, key string, body map[string]any, proxy 
 	if !ok || strings.TrimSpace(taskID) == "" {
 		return nil, fmt.Errorf("invalid task_id")
 	}
-	requestURL := tasksEndpoint(baseURL) + "/" + url.PathEscape(taskID)
+	apiVersion, _ := body["api_version"].(string)
+	requestURL := tasksEndpointForVersion(baseURL, apiVersion) + "/" + url.PathEscape(taskID)
 	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, err
@@ -582,7 +610,10 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 
 	result := &relaycommon.TaskInfo{Code: 0}
-	if task.TokenUsage != nil {
+	if task.Usage != nil {
+		result.CompletionTokens = task.Usage.CompletionTokens
+		result.TotalTokens = task.Usage.TotalTokens
+	} else if task.TokenUsage != nil {
 		result.CompletionTokens = task.TokenUsage.OutputTokens
 		result.TotalTokens = task.TokenUsage.TotalTokens
 	}
@@ -1392,11 +1423,31 @@ func referenceExtension(raw string) string {
 }
 
 func tasksEndpoint(baseURL string) string {
+	return tasksEndpointForVersion(baseURL, "")
+}
+
+func tasksEndpointForVersion(baseURL, apiVersion string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if strings.HasSuffix(trimmed, taskEndpointPath) {
-		return trimmed
+	for _, endpointPath := range []string{taskEndpointPath, seedanceV3EndpointPath} {
+		trimmed = strings.TrimSuffix(trimmed, endpointPath)
+	}
+	if strings.EqualFold(strings.TrimSpace(apiVersion), seedanceV3APIVersion) {
+		return trimmed + seedanceV3EndpointPath
 	}
 	return trimmed + taskEndpointPath
+}
+
+func taskAPIVersion(info *relaycommon.RelayInfo) string {
+	if info == nil {
+		return ""
+	}
+	if strings.EqualFold(info.TaskAPIVersion, seedanceV3APIVersion) {
+		return seedanceV3APIVersion
+	}
+	if isTokenBilledSeedanceModel(info.OriginModelName) {
+		return seedanceV3APIVersion
+	}
+	return ""
 }
 
 func getNormalizedRequest(c *gin.Context) (requestPayload, error) {
@@ -1460,7 +1511,7 @@ func normalizedTaskStatus(task upstreamTask) string {
 }
 
 func taskResultURL(task upstreamTask) string {
-	return firstNonEmpty(task.ResultURL, task.URL)
+	return firstNonEmpty(task.ResultURL, task.URL, task.Content.VideoURL)
 }
 
 func upstreamErrorMessage(upstreamErr *upstreamError) string {

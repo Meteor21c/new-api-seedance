@@ -5,9 +5,22 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestInitTaskPersistsProviderAPIVersion(t *testing.T) {
+	task := InitTask(constant.TaskPlatform("59"), &relaycommon.RelayInfo{
+		OriginModelName: "doubao-seedance-2.0",
+		TaskAPIVersion:  "v3",
+		ChannelMeta:     &relaycommon.ChannelMeta{},
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public_v3"},
+	})
+
+	assert.Equal(t, "v3", task.Properties.ProviderAPIVersion)
+	assert.Equal(t, "task_public_v3", task.TaskID)
+}
 
 func TestGetResultURLNeverReturnsFailureReason(t *testing.T) {
 	failed := &Task{

@@ -79,14 +79,15 @@ func (t *Task) GetData(v any) error {
 }
 
 type Properties struct {
-	Input             string `json:"input"`
-	UpstreamModelName string `json:"upstream_model_name,omitempty"`
-	OriginModelName   string `json:"origin_model_name,omitempty"`
-	Resolution        string `json:"resolution,omitempty"`
-	Duration          int    `json:"duration,omitempty"`
-	AspectRatio       string `json:"aspect_ratio,omitempty"`
-	Mode              string `json:"mode,omitempty"`
-	Audio             *bool  `json:"audio,omitempty"`
+	Input              string `json:"input"`
+	UpstreamModelName  string `json:"upstream_model_name,omitempty"`
+	OriginModelName    string `json:"origin_model_name,omitempty"`
+	ProviderAPIVersion string `json:"provider_api_version,omitempty"`
+	Resolution         string `json:"resolution,omitempty"`
+	Duration           int    `json:"duration,omitempty"`
+	AspectRatio        string `json:"aspect_ratio,omitempty"`
+	Mode               string `json:"mode,omitempty"`
+	Audio              *bool  `json:"audio,omitempty"`
 }
 
 func (m *Properties) Scan(val interface{}) error {
@@ -212,6 +213,9 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		}
 		if relayInfo.OriginModelName != "" {
 			properties.OriginModelName = relayInfo.OriginModelName
+		}
+		if relayInfo.TaskAPIVersion != "" {
+			properties.ProviderAPIVersion = relayInfo.TaskAPIVersion
 		}
 	}
 

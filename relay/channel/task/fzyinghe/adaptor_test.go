@@ -1,6 +1,7 @@
 package fzyinghe
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +138,40 @@ func TestBuildSeedanceTokenRequestUsesVendorNativeContent(t *testing.T) {
 	}`, string(encoded))
 }
 
+func TestBuildRequestBodyKeepsV3ForMappedDoubaoModel(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Set(requestContextKey, requestPayload{
+		Model:           "doubao-seedance-2.0",
+		Input:           "A short establishing shot",
+		Resolution:      "720p",
+		AspectRatio:     "16:9",
+		DurationSeconds: 4,
+		Audio:           true,
+	})
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "doubao-seedance-2.0",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "doubao-seedance-2-0-260128",
+			IsModelMapped:     true,
+		},
+	}
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(ginContext, info)
+	require.NoError(t, err)
+	encoded, err := io.ReadAll(body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"model":"doubao-seedance-2-0-260128",
+		"content":[{"type":"text","text":"A short establishing shot"}],
+		"generate_audio":true,
+		"ratio":"16:9",
+		"resolution":"720p",
+		"duration":4,
+		"watermark":false
+	}`, string(encoded))
+}
+
 func TestNormalizeKlingOfficialImageDoesNotBecomeBothFrames(t *testing.T) {
 	payload, err := normalizeRequest(relaycommon.TaskSubmitReq{
 		Model:  "kling-v3",
@@ -187,6 +222,29 @@ func TestMappedRequestModelResolvesChannelAliases(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "cheap-seedance-2.0-mini", mapped)
+}
+
+func TestValidateDoubaoModelBeforeApplyingOfficialV3Mapping(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", bytes.NewBufferString(`{
+		"model":"doubao-seedance-2.0",
+		"prompt":"A calm landscape",
+		"duration":4,
+		"resolution":"720p",
+		"aspect_ratio":"16:9"
+	}`))
+	ginContext.Request.Header.Set("Content-Type", "application/json")
+	ginContext.Set("model_mapping", `{"doubao-seedance-2.0":"doubao-seedance-2-0-260128"}`)
+	defer common.CleanupBodyStorage(ginContext)
+
+	info := &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+	taskErr := (&TaskAdaptor{}).ValidateRequestAndSetAction(ginContext, info)
+	require.Nil(t, taskErr)
+	payload, err := getNormalizedRequest(ginContext)
+	require.NoError(t, err)
+	assert.Equal(t, "doubao-seedance-2.0", payload.Model)
+	assert.Equal(t, seedanceV3APIVersion, info.TaskAPIVersion)
 }
 
 func TestMappedRequestModelRejectsCycles(t *testing.T) {
@@ -509,6 +567,60 @@ func TestParseTaskResultReturnsTokenUsage(t *testing.T) {
 	assert.Equal(t, 1500, result.TotalTokens)
 }
 
+func TestParseTaskResultReadsV3ContentAndUsage(t *testing.T) {
+	result, err := (&TaskAdaptor{}).ParseTaskResult([]byte(`{
+		"id":"cgt-v3-1",
+		"model":"doubao-seedance-2-0-260128",
+		"status":"succeeded",
+		"content":{
+			"video_url":"https://cdn.example.com/v3-result.mp4",
+			"last_frame_url":"https://cdn.example.com/v3-last-frame.png"
+		},
+		"usage":{"completion_tokens":60682,"total_tokens":60682},
+		"created_at":1784876400,
+		"updated_at":1784877603
+	}`))
+	require.NoError(t, err)
+	assert.EqualValues(t, model.TaskStatusSuccess, result.Status)
+	assert.Equal(t, "https://cdn.example.com/v3-result.mp4", result.Url)
+	assert.Equal(t, 60682, result.CompletionTokens)
+	assert.Equal(t, 60682, result.TotalTokens)
+}
+
+func TestBuildRequestURLUsesV3OnlyForDoubaoSeedance(t *testing.T) {
+	adaptor := &TaskAdaptor{baseURL: "https://api-aigc.fzyinghe.com"}
+
+	v3URL, err := adaptor.BuildRequestURL(&relaycommon.RelayInfo{
+		OriginModelName: "doubao-seedance-2.0-mini",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://api-aigc.fzyinghe.com/v3/video/tasks", v3URL)
+
+	v1URL, err := adaptor.BuildRequestURL(&relaycommon.RelayInfo{
+		OriginModelName: "cheap-seedance-2.0-mini",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://api-aigc.fzyinghe.com/video/generation/tasks", v1URL)
+}
+
+func TestFetchTaskUsesPersistedV3Protocol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "/v3/video/tasks/cgt-v3-1", request.URL.Path)
+		assert.Equal(t, "Bearer test-key", request.Header.Get("Authorization"))
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte(`{"id":"cgt-v3-1","status":"running"}`))
+	}))
+	defer server.Close()
+
+	response, err := (&TaskAdaptor{}).FetchTask(server.URL, "test-key", map[string]any{
+		"task_id":     "cgt-v3-1",
+		"api_version": seedanceV3APIVersion,
+	}, "")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+}
+
 func TestTasksEndpointDoesNotDuplicatePath(t *testing.T) {
 	assert.Equal(t,
 		"https://api-aigc.fzyinghe.com/video/generation/tasks",
@@ -517,5 +629,9 @@ func TestTasksEndpointDoesNotDuplicatePath(t *testing.T) {
 	assert.Equal(t,
 		"https://api-aigc.fzyinghe.com/video/generation/tasks",
 		tasksEndpoint("https://api-aigc.fzyinghe.com/video/generation/tasks/"),
+	)
+	assert.Equal(t,
+		"https://api-aigc.fzyinghe.com/v3/video/tasks",
+		tasksEndpointForVersion("https://api-aigc.fzyinghe.com/video/generation/tasks/", seedanceV3APIVersion),
 	)
 }
