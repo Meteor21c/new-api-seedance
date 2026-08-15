@@ -18,10 +18,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 /**
  * Client-only persistence for the image/video generation workspaces.
  *
- * Task metadata and signed result URLs live in localStorage. Image generation
- * additionally stores base64 results as browser-local IndexedDB Blobs. None of
- * this adds application-server storage, CPU, or background work. Records are
- * scoped to the signed-in user and expire automatically after 24 hours.
+ * Task metadata and signed result URLs live in localStorage. IndexedDB keeps
+ * large browser-local data such as image results and video draft files. None
+ * of this adds application-server storage, CPU, or background work. Result
+ * records are scoped to the signed-in user and expire after 24 hours.
  */
 
 export const GENERATION_RESULT_TTL_MS = 24 * 60 * 60 * 1000

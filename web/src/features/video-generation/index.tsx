@@ -29,7 +29,10 @@ import {
   Gauge,
   ImagePlus,
   LoaderCircle,
+  RotateCcw,
   Sparkles,
+  Trash2,
+  Undo2,
   Volume2,
   X,
 } from 'lucide-react'
@@ -68,8 +71,10 @@ import { Textarea } from '@/components/ui/textarea'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 
 import {
+  GENERATION_RESULT_TTL_MS,
   readGenerationHistory,
   readGenerationRecord,
+  removeGenerationRecord,
   writeGenerationHistory,
   writeGenerationRecord,
 } from '../generation-storage'
@@ -83,8 +88,14 @@ import {
 } from './api'
 import { VideoPriceComparison } from './price-comparison'
 import {
+  clearVideoDraftFiles,
+  loadVideoDraftFiles,
+  saveVideoDraftFiles,
+} from './storage'
+import {
   VIDEO_ASPECT_RATIOS,
   VIDEO_MODES,
+  VIDEO_RESOLUTIONS,
   type VideoBillingMode,
   type VideoGenerationRequest,
   type VideoAspectRatio,
@@ -227,6 +238,64 @@ const videoFormSchema = z
   })
 
 type VideoFormValues = z.infer<typeof videoFormSchema>
+
+const DEFAULT_VIDEO_FORM_VALUES: VideoFormValues = {
+  model: '',
+  prompt: '',
+  duration: 5,
+  resolution: '720p',
+  aspectRatio: '9:16',
+  mode: 'text_with_reference',
+  audio: true,
+  referenceUrls: '',
+  startImageUrl: '',
+  endImageUrl: '',
+}
+
+function readVideoFormDraft(): VideoFormValues {
+  const stored = readGenerationRecord<Partial<VideoFormValues>>(
+    'video-form-draft',
+    Number.MAX_SAFE_INTEGER
+  )?.value
+  if (!stored || typeof stored !== 'object') {
+    return { ...DEFAULT_VIDEO_FORM_VALUES }
+  }
+
+  const draft = { ...DEFAULT_VIDEO_FORM_VALUES }
+  if (typeof stored.model === 'string') draft.model = stored.model
+  if (typeof stored.prompt === 'string') draft.prompt = stored.prompt
+  if (typeof stored.duration === 'number' && Number.isFinite(stored.duration)) {
+    draft.duration = stored.duration
+  }
+  if (
+    VIDEO_RESOLUTIONS.includes(
+      stored.resolution as (typeof VIDEO_RESOLUTIONS)[number]
+    )
+  ) {
+    draft.resolution = stored.resolution as VideoResolution
+  }
+  if (
+    VIDEO_ASPECT_RATIOS.includes(
+      stored.aspectRatio as (typeof VIDEO_ASPECT_RATIOS)[number]
+    )
+  ) {
+    draft.aspectRatio = stored.aspectRatio as VideoAspectRatio
+  }
+  if (VIDEO_MODES.includes(stored.mode as (typeof VIDEO_MODES)[number])) {
+    draft.mode = stored.mode as VideoFormValues['mode']
+  }
+  if (typeof stored.audio === 'boolean') draft.audio = stored.audio
+  if (typeof stored.referenceUrls === 'string') {
+    draft.referenceUrls = stored.referenceUrls
+  }
+  if (typeof stored.startImageUrl === 'string') {
+    draft.startImageUrl = stored.startImageUrl
+  }
+  if (typeof stored.endImageUrl === 'string') {
+    draft.endImageUrl = stored.endImageUrl
+  }
+  return draft
+}
 
 type VideoTaskPresentation = {
   prompt: string
@@ -491,6 +560,13 @@ function taskTimestamp(task: VideoTask): string {
 
 function taskSortTimestamp(task: VideoTask): number {
   return task.updated_at || task.created_at || task.submit_time || 0
+}
+
+function isVideoTaskExpired(task: VideoTask): boolean {
+  const createdAt = task.submit_time || task.created_at
+  return (
+    createdAt > 0 && Date.now() - createdAt * 1000 >= GENERATION_RESULT_TTL_MS
+  )
 }
 
 function taskHistoryKey(task: VideoTask): string {
@@ -894,9 +970,19 @@ export function VideoGeneration() {
         )?.value ?? {}
       )
     })
+  const [dismissedTaskIds, setDismissedTaskIds] = useState<string[]>(() => {
+    return (
+      readGenerationRecord<string[]>(
+        'video-dismissed-task-ids',
+        Number.MAX_SAFE_INTEGER
+      )?.value ?? []
+    )
+  })
   const [referenceFiles, setReferenceFiles] = useState<File[]>([])
   const [startFrameFile, setStartFrameFile] = useState<File | null>(null)
   const [endFrameFile, setEndFrameFile] = useState<File | null>(null)
+  const [draftFilesHydrated, setDraftFilesHydrated] = useState(false)
+  const [fileInputResetKey, setFileInputResetKey] = useState(0)
   const [isUploading, setIsUploading] = useState(false)
   const [downloadingTaskId, setDownloadingTaskId] = useState('')
   const { copyToClipboard } = useCopyToClipboard({
@@ -905,19 +991,49 @@ export function VideoGeneration() {
 
   const form = useForm<VideoFormValues>({
     resolver: zodResolver(videoFormSchema),
-    defaultValues: {
-      model: '',
-      prompt: '',
-      duration: 5,
-      resolution: '720p',
-      aspectRatio: '9:16',
-      mode: 'text_with_reference',
-      audio: true,
-      referenceUrls: '',
-      startImageUrl: '',
-      endImageUrl: '',
-    },
+    defaultValues: readVideoFormDraft(),
   })
+
+  useEffect(() => {
+    const subscription = form.watch((values) => {
+      writeGenerationRecord('video-form-draft', values)
+    })
+    return () => subscription.unsubscribe()
+  }, [form])
+
+  useEffect(() => {
+    let cancelled = false
+    void loadVideoDraftFiles()
+      .then((files) => {
+        if (cancelled) return
+        setReferenceFiles(files.referenceFiles)
+        setStartFrameFile(files.startFrameFile)
+        setEndFrameFile(files.endFrameFile)
+      })
+      .catch(() => {
+        // Private browsing may disable IndexedDB. Text settings still persist.
+      })
+      .finally(() => {
+        if (!cancelled) setDraftFilesHydrated(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!draftFilesHydrated) return
+    const timeout = window.setTimeout(() => {
+      void saveVideoDraftFiles({
+        referenceFiles,
+        startFrameFile,
+        endFrameFile,
+      }).catch(() => {
+        // File persistence is best-effort and must not block generation.
+      })
+    }, 150)
+    return () => window.clearTimeout(timeout)
+  }, [draftFilesHydrated, endFrameFile, referenceFiles, startFrameFile])
 
   const saveVideoTask = async (task: VideoTask) => {
     if (!task.task_id || downloadingTaskId) return
@@ -999,6 +1115,15 @@ export function VideoGeneration() {
       form.setValue('aspectRatio', allowedAspectRatios[0] ?? '16:9')
     }
   }, [allowedAspectRatios, form])
+
+  useEffect(() => {
+    if (duration < minimumDuration) {
+      form.setValue('duration', minimumDuration, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+    }
+  }, [duration, form, minimumDuration])
 
   useEffect(() => {
     if (klingOmniReferenceVideo && form.getValues('audio')) {
@@ -1112,10 +1237,13 @@ export function VideoGeneration() {
   })
 
   useEffect(() => {
-    const serverHistory = historyQuery.data?.data?.items ?? []
+    const dismissed = new Set(dismissedTaskIds)
+    const serverHistory = (historyQuery.data?.data?.items ?? []).filter(
+      (task) => !dismissed.has(taskHistoryKey(task))
+    )
     if (serverHistory.length === 0) return
     setLocalHistory((previous) => mergeVideoTasks(previous, serverHistory))
-  }, [historyQuery.data])
+  }, [dismissedTaskIds, historyQuery.data])
 
   useEffect(() => {
     writeGenerationHistory('video-history', localHistory)
@@ -1124,6 +1252,24 @@ export function VideoGeneration() {
   useEffect(() => {
     writeGenerationRecord('video-task-presentations', taskPresentations)
   }, [taskPresentations])
+
+  useEffect(() => {
+    writeGenerationRecord('video-dismissed-task-ids', dismissedTaskIds)
+  }, [dismissedTaskIds])
+
+  const clearContentDraft = () => {
+    form.setValue('prompt', '')
+    form.setValue('referenceUrls', '')
+    form.setValue('startImageUrl', '')
+    form.setValue('endImageUrl', '')
+    setReferenceFiles([])
+    setStartFrameFile(null)
+    setEndFrameFile(null)
+    setFileInputResetKey((value) => value + 1)
+    void clearVideoDraftFiles().catch(() => {
+      // IndexedDB may be unavailable; in-memory fields are still cleared.
+    })
+  }
 
   const createMutation = useMutation({
     mutationFn: createVideoTracked,
@@ -1146,15 +1292,6 @@ export function VideoGeneration() {
       writeGenerationRecord('video-current-task-id', taskId)
       toast.success(t('Video task submitted'))
       void queryClient.invalidateQueries({ queryKey: ['video-tasks'] })
-    },
-    onError: (error) => {
-      const message = errorMessage(error)
-      const hint = upstreamFailureHint(message)
-      toast.error(
-        hint
-          ? `${message}\n${t(hint)}`
-          : message || t('Video task submission failed')
-      )
     },
   })
 
@@ -1244,10 +1381,17 @@ export function VideoGeneration() {
           request.end_image_url = values.endImageUrl.trim()
         }
       }
-      createMutation.mutate(request)
+      await createMutation.mutateAsync(request)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('Upload failed'))
+      const message = errorMessage(error)
+      const hint = upstreamFailureHint(message)
+      toast.error(
+        hint
+          ? `${message}\n${t(hint)}`
+          : message || t('Video task submission failed')
+      )
     } finally {
+      clearContentDraft()
       setIsUploading(false)
     }
   }
@@ -1284,14 +1428,107 @@ export function VideoGeneration() {
     )
   }
 
+  const resetVideoForm = () => {
+    form.reset({
+      ...DEFAULT_VIDEO_FORM_VALUES,
+      model: modelsQuery.data?.[0]?.id ?? '',
+    })
+    setReferenceFiles([])
+    setStartFrameFile(null)
+    setEndFrameFile(null)
+    setFileInputResetKey((value) => value + 1)
+    removeGenerationRecord('video-form-draft')
+    void clearVideoDraftFiles().catch(() => {
+      // IndexedDB may be unavailable; in-memory fields are still reset.
+    })
+    toast.success(t('Form reset'))
+  }
+
+  const restoreTaskTemplate = (presentation: VideoTaskPresentation) => {
+    const current = form.getValues()
+    const availableModel = modelsQuery.data?.find(
+      (item) => item.id === presentation.model
+    )
+    const nextModel = availableModel?.id ?? current.model
+    const nextKind = modelKindForSelection(nextModel, availableModel?.kind)
+    const nextTier = availableModel?.tier ?? inferredModelTier(nextModel)
+    const nextResolutions = resolutionsForModel(
+      nextKind,
+      nextTier,
+      availableModel?.resolutions
+    )
+    const nextAspectRatios = aspectRatiosForKind(nextKind)
+    const restoredResolution = presentation.resolution as VideoResolution
+    const restoredAspectRatio = presentation.aspectRatio as VideoAspectRatio
+    const restoredMode = presentation.mode as VideoFormValues['mode']
+    const nextMinimumDuration = minimumDurationForKind(nextKind)
+    const canRestoreDuration =
+      presentation.duration !== undefined &&
+      presentation.duration >= nextMinimumDuration &&
+      presentation.duration <= 15
+
+    form.reset({
+      ...current,
+      model: nextModel,
+      prompt: presentation.prompt,
+      resolution: nextResolutions.includes(restoredResolution)
+        ? restoredResolution
+        : current.resolution,
+      duration: canRestoreDuration
+        ? (presentation.duration ?? current.duration)
+        : current.duration,
+      aspectRatio: nextAspectRatios.includes(restoredAspectRatio)
+        ? restoredAspectRatio
+        : current.aspectRatio,
+      mode: VIDEO_MODES.includes(restoredMode) ? restoredMode : current.mode,
+      audio: presentation.audio ?? current.audio,
+      referenceUrls: '',
+      startImageUrl: '',
+      endImageUrl: '',
+    })
+    setReferenceFiles([])
+    setStartFrameFile(null)
+    setEndFrameFile(null)
+    setFileInputResetKey((value) => value + 1)
+    void clearVideoDraftFiles().catch(() => {
+      // Expired local assets are intentionally not restored.
+    })
+    toast.success(t('Template restored'))
+  }
+
+  const dismissExpiredTask = (task: VideoTask) => {
+    const key = taskHistoryKey(task)
+    setDismissedTaskIds((previous) =>
+      [...new Set([...previous, key])].slice(-100)
+    )
+    setLocalHistory((previous) =>
+      previous.filter((item) => taskHistoryKey(item) !== key)
+    )
+    setTaskPresentations((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([taskID]) => taskID !== key)
+      )
+    )
+    if (currentTaskId === key) {
+      setCurrentTaskId('')
+      setRestoredTask(null)
+      removeGenerationRecord('video-current-task-id')
+      removeGenerationRecord('video-current-task')
+    }
+    toast.success(t('Expired task removed'))
+  }
+
   const currentTask = currentTaskQuery.data?.data ?? restoredTask
   const hasActiveVideoTask = Boolean(
     currentTask && !TERMINAL_STATUSES.has(currentTask.status)
   )
-  const history = useMemo(
-    () => mergeVideoTasks(localHistory, historyQuery.data?.data?.items ?? []),
-    [historyQuery.data?.data?.items, localHistory]
-  )
+  const history = useMemo(() => {
+    const dismissed = new Set(dismissedTaskIds)
+    return mergeVideoTasks(
+      localHistory,
+      historyQuery.data?.data?.items ?? []
+    ).filter((task) => !dismissed.has(taskHistoryKey(task)))
+  }, [dismissedTaskIds, historyQuery.data?.data?.items, localHistory])
 
   return (
     <Main className='space-y-6 overflow-x-hidden overflow-y-auto px-3 py-6 pb-12 sm:px-4'>
@@ -1310,15 +1547,27 @@ export function VideoGeneration() {
           <CardHeader>
             <CardTitle>{t('Generation settings')}</CardTitle>
             <CardAction>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                onClick={copyMcpPrompt}
-              >
-                <Copy />
-                {t('Copy MCP prompt')}
-              </Button>
+              <div className='flex flex-wrap items-center gap-2'>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='sm'
+                  disabled={createMutation.isPending || isUploading}
+                  onClick={resetVideoForm}
+                >
+                  <RotateCcw />
+                  {t('Reset')}
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={copyMcpPrompt}
+                >
+                  <Copy />
+                  {t('Copy MCP prompt')}
+                </Button>
+              </div>
             </CardAction>
           </CardHeader>
           <CardContent>
@@ -1549,6 +1798,7 @@ export function VideoGeneration() {
                       <FormLabel>{t('Upload reference images')}</FormLabel>
                       <FormControl>
                         <Input
+                          key={`references-${fileInputResetKey}`}
                           type='file'
                           accept='image/jpeg,image/png,image/webp'
                           multiple
@@ -1605,7 +1855,7 @@ export function VideoGeneration() {
                       </FormControl>
                       <FormDescription>
                         {t(
-                          'Upload up to {{count}} static JPG, PNG, or WEBP images, up to 10 MiB each. Select files again to append.',
+                          'Upload up to {{count}} static JPG, PNG, or WEBP images, up to 10 MiB each.',
                           { count: maxReferenceImages }
                         )}
                         {referenceFiles.length > 0 && (
@@ -1691,6 +1941,7 @@ export function VideoGeneration() {
                           <FormControl>
                             <div className='space-y-2'>
                               <Input
+                                key={`start-${fileInputResetKey}`}
                                 type='file'
                                 accept='image/jpeg,image/png,image/webp'
                                 onChange={(event) =>
@@ -1726,6 +1977,7 @@ export function VideoGeneration() {
                           <FormControl>
                             <div className='space-y-2'>
                               <Input
+                                key={`end-${fileInputResetKey}`}
                                 type='file'
                                 accept='image/jpeg,image/png,image/webp'
                                 onChange={(event) =>
@@ -1858,14 +2110,30 @@ export function VideoGeneration() {
                       task,
                       taskPresentations[task.task_id]
                     )
+                    const expired = isVideoTaskExpired(task)
+                    const canRestoreTemplate = Boolean(
+                      presentation.prompt ||
+                      presentation.model ||
+                      presentation.resolution ||
+                      presentation.duration ||
+                      presentation.aspectRatio ||
+                      presentation.mode ||
+                      presentation.audio !== undefined
+                    )
                     return (
                       <div
                         className='bg-muted/20 flex flex-col gap-3 rounded-lg border p-4'
                         key={task.task_id}
                       >
                         <div className='flex flex-wrap items-center justify-between gap-2'>
-                          <Badge variant={statusVariant(task.status)}>
-                            {t(taskStatusTranslationKey(task.status))}
+                          <Badge
+                            variant={
+                              expired ? 'secondary' : statusVariant(task.status)
+                            }
+                          >
+                            {expired
+                              ? t('Expired')
+                              : t(taskStatusTranslationKey(task.status))}
                           </Badge>
                           <span className='text-muted-foreground text-xs'>
                             {taskTimestamp(task)}
@@ -1893,18 +2161,31 @@ export function VideoGeneration() {
                           </p>
                         )}
                         <div className='flex flex-wrap items-center gap-2'>
-                          <Button
-                            className='flex-1'
-                            size='sm'
-                            variant='secondary'
-                            onClick={() => {
-                              setRestoredTask(task)
-                              setCurrentTaskId(task.task_id)
-                            }}
-                          >
-                            {t('View')}
-                          </Button>
-                          {task.status === 'SUCCESS' && (
+                          {!expired && (
+                            <Button
+                              className='flex-1'
+                              size='sm'
+                              variant='secondary'
+                              onClick={() => {
+                                setRestoredTask(task)
+                                setCurrentTaskId(task.task_id)
+                              }}
+                            >
+                              {t('View')}
+                            </Button>
+                          )}
+                          {canRestoreTemplate && (
+                            <Button
+                              className='flex-1'
+                              size='sm'
+                              variant='outline'
+                              onClick={() => restoreTaskTemplate(presentation)}
+                            >
+                              <Undo2 />
+                              {t('Restore template')}
+                            </Button>
+                          )}
+                          {task.status === 'SUCCESS' && !expired && (
                             <Button
                               className='flex-1'
                               disabled={Boolean(downloadingTaskId)}
@@ -1920,6 +2201,17 @@ export function VideoGeneration() {
                               {downloadingTaskId === task.task_id
                                 ? t('Saving video')
                                 : t('Save video')}
+                            </Button>
+                          )}
+                          {expired && (
+                            <Button
+                              className='flex-1'
+                              size='sm'
+                              variant='destructive'
+                              onClick={() => dismissExpiredTask(task)}
+                            >
+                              <Trash2 />
+                              {t('Delete record')}
                             </Button>
                           )}
                         </div>
