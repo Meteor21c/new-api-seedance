@@ -400,6 +400,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
 	}
+	if billingUsage != nil && billingUsage.BillingUsage != nil && billingUsage.BillingUsage.Estimated {
+		extraContent = append(extraContent, "上游 usage 缺失，已按本地输入 Token 估算计费")
+	}
 	if originUsage != nil {
 		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
 	}

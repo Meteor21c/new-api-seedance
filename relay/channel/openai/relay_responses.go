@@ -84,6 +84,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responseTextBuilder strings.Builder
 	imageCounter := &relaycommon.ImageGenerationCallCounter{}
 	imageCommitted := false
+	responseTerminalFailure := false
+	usageEventReceived := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
@@ -99,6 +101,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		case "response.completed", "response.done":
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
+					usageEventReceived = dto.HasOpenAIUsageTokens(streamResponse.Response.Usage)
 					if streamResponse.Response.Usage.InputTokens != 0 {
 						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
 					}
@@ -132,6 +135,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 				imageCommitted = true
 			}
 		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			responseTerminalFailure = true
 			if !imageCommitted {
 				imageCounter.Reset()
 				imageCounter.Commit(info)
@@ -173,6 +177,33 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	applyEstimatedResponsesUsage(info, usage, responseTerminalFailure, usageEventReceived)
 
 	return usage, nil
+}
+
+// applyEstimatedResponsesUsage protects billing when an upstream has already
+// emitted response events but the client disconnects before the final usage
+// event reaches the relay. In that case the provider may still bill the input,
+// while a zero usage would refund the entire pre-consume and create free use.
+// Explicit provider failure/incomplete events remain on the existing path.
+func applyEstimatedResponsesUsage(info *relaycommon.RelayInfo, usage *dto.Usage, responseTerminalFailure, usageEventReceived bool) {
+	if info == nil || usage == nil || responseTerminalFailure || usageEventReceived || info.ReceivedResponseCount == 0 {
+		return
+	}
+	promptTokens := info.GetEstimatePromptTokens()
+	if promptTokens <= 0 {
+		return
+	}
+	if usage.PromptTokens == 0 {
+		usage.PromptTokens = promptTokens
+	}
+	if usage.InputTokens == 0 {
+		usage.InputTokens = usage.PromptTokens
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if billingUsage := dto.NewOpenAIResponsesBillingUsage(usage); billingUsage != nil {
+		billingUsage.Estimated = true
+		usage.BillingUsage = billingUsage
+	}
 }
