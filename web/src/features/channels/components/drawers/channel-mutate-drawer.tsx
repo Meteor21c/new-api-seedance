@@ -297,6 +297,7 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_speed',
   'claude_beta_query',
   'disable_task_polling_sleep',
+  'user_concurrency_limit',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -345,6 +346,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     (values.http2_connection_shards != null &&
       values.http2_connection_shards > 1) ||
     values.claude_beta_query ||
+    (values.user_concurrency_limit ?? 0) > 0 ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
     values.upstream_model_update_ignored_models?.trim()
@@ -749,6 +751,7 @@ export function ChannelMutateDrawer({
   const currentDisableTaskPollingSleep = form.watch(
     'disable_task_polling_sleep'
   )
+  const currentUserConcurrencyLimit = form.watch('user_concurrency_limit')
   const currentProxy = form.watch('proxy')
   const currentHttpProtocol = form.watch('http_protocol')
   const currentHttp2ConnectionShards = form.watch('http2_connection_shards')
@@ -1004,6 +1007,7 @@ export function ChannelMutateDrawer({
     currentPriority ||
     currentWeight ||
     currentTestModel?.trim() ||
+    (currentUserConcurrencyLimit ?? 0) > 0 ||
     (currentAutoBan ?? 1) !== 1
   )
   const internalNotesConfigured = Boolean(
@@ -3690,6 +3694,39 @@ export function ChannelMutateDrawer({
 
                             <FormField
                               control={form.control}
+                              name='user_concurrency_limit'
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {t('Per-user Concurrency Limit')}
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Input
+                                      type='number'
+                                      min={0}
+                                      max={1000}
+                                      step={1}
+                                      placeholder='0'
+                                      {...field}
+                                      onChange={(event) =>
+                                        field.onChange(
+                                          Number(event.target.value || 0)
+                                        )
+                                      }
+                                    />
+                                  </FormControl>
+                                  <FormDescription>
+                                    {t(
+                                      FIELD_DESCRIPTIONS.USER_CONCURRENCY_LIMIT
+                                    )}
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+
+                            <FormField
+                              control={form.control}
                               name='test_model'
                               render={({ field }) => (
                                 <FormItem>
@@ -4233,9 +4270,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

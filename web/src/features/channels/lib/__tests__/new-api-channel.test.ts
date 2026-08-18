@@ -24,7 +24,11 @@ import {
   CHANNEL_TYPE_OPTIONS,
   MODEL_FETCHABLE_TYPES,
 } from '../../constants'
-import { CHANNEL_FORM_DEFAULT_VALUES, channelFormSchema } from '../channel-form'
+import {
+  CHANNEL_FORM_DEFAULT_VALUES,
+  channelFormSchema,
+  transformFormDataToUpdatePayload,
+} from '../channel-form'
 import { getChannelTypeConfig } from '../channel-type-config'
 import { getChannelTypeIcon, getKeyPromptForType } from '../channel-utils'
 
@@ -93,5 +97,44 @@ describe('New API channel', () => {
     })
 
     assert.equal(result.success, true)
+  })
+
+  test('validates and persists the per-user concurrency limit in channel settings', () => {
+    const limited = {
+      ...newAPIForm('https://new-api.example'),
+      user_concurrency_limit: 3,
+      settings: '{"custom_setting":"preserved"}',
+    }
+    assert.equal(channelFormSchema.safeParse(limited).success, true)
+
+    const payload = transformFormDataToUpdatePayload(limited, 42)
+    const settings = JSON.parse(String(payload.settings))
+    assert.equal(settings.user_concurrency_limit, 3)
+    assert.equal(settings.custom_setting, 'preserved')
+
+    const unlimitedPayload = transformFormDataToUpdatePayload(
+      {
+        ...limited,
+        user_concurrency_limit: 0,
+        settings: String(payload.settings),
+      },
+      42
+    )
+    const unlimitedSettings = JSON.parse(String(unlimitedPayload.settings))
+    assert.equal('user_concurrency_limit' in unlimitedSettings, false)
+    assert.equal(
+      channelFormSchema.safeParse({
+        ...limited,
+        user_concurrency_limit: -1,
+      }).success,
+      false
+    )
+    assert.equal(
+      channelFormSchema.safeParse({
+        ...limited,
+        user_concurrency_limit: 1001,
+      }).success,
+      false
+    )
   })
 })

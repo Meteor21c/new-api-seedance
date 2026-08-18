@@ -26,9 +26,10 @@ type ChannelSettings struct {
 }
 
 const (
-	HTTPProtocolAuto         = "auto"
-	HTTPProtocolHTTP1        = "http1"
-	MaxHTTP2ConnectionShards = 8
+	HTTPProtocolAuto          = "auto"
+	HTTPProtocolHTTP1         = "http1"
+	MaxHTTP2ConnectionShards  = 8
+	MaxChannelUserConcurrency = 1000
 )
 
 // ValidateHTTPTransport validates save-time HTTP transport channel settings.
@@ -66,6 +67,7 @@ const (
 )
 
 type ChannelOtherSettings struct {
+	UserConcurrencyLimit                  int                   `json:"user_concurrency_limit,omitempty"` // 每个用户在此渠道上的同时对话请求数，0 表示不限制
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
 	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
@@ -85,6 +87,16 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastRemovedModels  []string              `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
 	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
+}
+
+func (s *ChannelOtherSettings) ValidateUserConcurrencyLimit() error {
+	if s == nil {
+		return nil
+	}
+	if s.UserConcurrencyLimit < 0 || s.UserConcurrencyLimit > MaxChannelUserConcurrency {
+		return fmt.Errorf("user_concurrency_limit must be between 0 and %d", MaxChannelUserConcurrency)
+	}
+	return nil
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

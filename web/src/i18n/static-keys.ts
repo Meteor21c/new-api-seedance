@@ -215,6 +215,11 @@ export const STATIC_I18N_KEYS = [
   // Channel Affinity section
   'Channel Affinity',
 
+  // Channel per-user concurrency
+  'Per-user Concurrency Limit',
+  'Per-user concurrency limit must be between 0 and 1000',
+  'Maximum simultaneous conversation requests per user on this channel. 0 means unlimited. Images, videos, embeddings, reranking, and background tasks are not affected.',
+
   // Models constants
   'Exact Match',
   'Prefix Match',

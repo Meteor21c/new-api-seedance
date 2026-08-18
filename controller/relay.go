@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -193,7 +194,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
+		channel, concurrencyLease, channelErr := getChannelWithUserConcurrency(c, relayInfo, retryParam, relayFormat)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
@@ -201,12 +202,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		addUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+			concurrencyLease.Release()
 			newAPIError = billingErr
 			break
 		}
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
+			concurrencyLease.Release()
 			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
 			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
 				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
@@ -217,16 +220,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
-		switch relayFormat {
-		case types.RelayFormatOpenAIRealtime:
-			newAPIError = relay.WssHelper(c, relayInfo)
-		case types.RelayFormatClaude:
-			newAPIError = relay.ClaudeHelper(c, relayInfo)
-		case types.RelayFormatGemini:
-			newAPIError = geminiRelayHandler(c, relayInfo)
-		default:
-			newAPIError = relayHandler(c, relayInfo)
-		}
+		newAPIError = func() *types.NewAPIError {
+			defer concurrencyLease.Release()
+			switch relayFormat {
+			case types.RelayFormatOpenAIRealtime:
+				return relay.WssHelper(c, relayInfo)
+			case types.RelayFormatClaude:
+				return relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				return geminiRelayHandler(c, relayInfo)
+			default:
+				return relayHandler(c, relayInfo)
+			}
+		}()
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
@@ -326,6 +332,77 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, newAPIError
 	}
 	return channel, nil
+}
+
+func relayUsesChannelUserConcurrency(relayFormat types.RelayFormat) bool {
+	switch relayFormat {
+	case types.RelayFormatOpenAI,
+		types.RelayFormatClaude,
+		types.RelayFormatGemini,
+		types.RelayFormatOpenAIResponses,
+		types.RelayFormatOpenAIResponsesCompaction,
+		types.RelayFormatOpenAIRealtime:
+		return true
+	default:
+		return false
+	}
+}
+
+func selectedChannelUserConcurrencyLimit(c *gin.Context) int {
+	settings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
+	if !ok || settings.UserConcurrencyLimit <= 0 {
+		return 0
+	}
+	return settings.UserConcurrencyLimit
+}
+
+func channelUserConcurrencyError(c *gin.Context, limit int) *types.NewAPIError {
+	message := i18n.T(c, i18n.MsgChannelUserConcurrencyLimit, map[string]any{"Limit": limit})
+	return types.NewErrorWithStatusCode(
+		errors.New(message),
+		types.ErrorCodeChannelUserConcurrencyLimit,
+		http.StatusTooManyRequests,
+		types.ErrOptionWithSkipRetry(),
+		types.ErrOptionWithNoRecordErrorLog(),
+	)
+}
+
+func getChannelWithUserConcurrency(
+	c *gin.Context,
+	info *relaycommon.RelayInfo,
+	retryParam *service.RetryParam,
+	relayFormat types.RelayFormat,
+) (*model.Channel, *service.ChannelUserConcurrencyLease, *types.NewAPIError) {
+	blockedLimit := 0
+	for {
+		channel, channelErr := getChannel(c, info, retryParam)
+		if channelErr != nil {
+			if blockedLimit > 0 {
+				return nil, nil, channelUserConcurrencyError(c, blockedLimit)
+			}
+			return nil, nil, channelErr
+		}
+		if !relayUsesChannelUserConcurrency(relayFormat) {
+			return channel, nil, nil
+		}
+
+		limit := selectedChannelUserConcurrencyLimit(c)
+		lease, acquired := service.AcquireChannelUserConcurrency(c.Request.Context(), channel.Id, c.GetInt("id"), limit)
+		if acquired {
+			return channel, lease, nil
+		}
+
+		blockedLimit = limit
+		retryParam.ExcludeChannel(channel.Id)
+		if _, specificChannel := c.Get("specific_channel_id"); specificChannel {
+			return nil, nil, channelUserConcurrencyError(c, limit)
+		}
+		if info.ChannelMeta == nil {
+			// The first attempt normally reuses the channel selected by Distribute.
+			// Initialize its snapshot before searching the cache for an alternative.
+			info.InitChannelMeta(c)
+		}
+	}
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {

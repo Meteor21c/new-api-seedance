@@ -127,3 +127,31 @@ func TestCacheGetRandomSatisfiedChannelUsesTokenAutoGroupsWhenGlobalAutoIsEmpty(
 	assert.Equal(t, "default", selectedGroup)
 	assert.Equal(t, "default", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 }
+
+func TestCacheGetRandomSatisfiedChannelExcludesBusyChannel(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	const modelName = "channel-concurrency-runtime-model"
+	createChannelSelectAutoGroupsChannel(t, db, 2201, "default", modelName)
+	createChannelSelectAutoGroupsChannel(t, db, 2202, "default", modelName)
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+
+	retry := 0
+	param := &RetryParam{
+		Ctx:         ctx,
+		TokenGroup:  "default",
+		ModelName:   modelName,
+		RequestPath: "/v1/responses",
+		Retry:       &retry,
+	}
+	param.ExcludeChannel(2201)
+
+	selected, selectedGroup, err := CacheGetRandomSatisfiedChannel(param)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, 2202, selected.Id)
+	assert.Equal(t, "default", selectedGroup)
+}

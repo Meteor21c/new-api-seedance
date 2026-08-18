@@ -33,6 +33,7 @@ const (
 	MsgGenerateAlreadyInProgress      = "generation.already_in_progress"
 	MsgGenerateVideoAlreadyInProgress = "generation.video_already_in_progress"
 	MsgGenerateConcurrencyCheckFailed = "generation.concurrency_check_failed"
+	MsgChannelUserConcurrencyLimit    = "channel.user_concurrency_limit"
 )
 
 // Auth middleware messages

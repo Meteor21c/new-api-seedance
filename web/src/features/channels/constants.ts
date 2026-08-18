@@ -251,6 +251,8 @@ export const ERROR_MESSAGES = {
     'HTTP/2 connection shards must be between 1 and 8',
   INVALID_HTTP1_WITH_SHARDS:
     'HTTP/2 connection shards must be 1 when HTTP/1.1 is selected',
+  INVALID_USER_CONCURRENCY_LIMIT:
+    'Per-user concurrency limit must be between 0 and 1000',
   CREATE_FAILED: 'Failed to create channel',
   UPDATE_FAILED: 'Failed to update channel',
   DELETE_FAILED: 'Failed to delete channel',
@@ -373,6 +375,8 @@ export const FIELD_DESCRIPTIONS = {
   WEIGHT: 'Used for load balancing. Higher weight = more requests',
   TEST_MODEL: 'Model to use when testing channel connectivity',
   AUTO_BAN: 'Automatically disable channel on repeated failures',
+  USER_CONCURRENCY_LIMIT:
+    'Maximum simultaneous conversation requests per user on this channel. 0 means unlimited. Images, videos, embeddings, reranking, and background tasks are not affected.',
   STATUS_CODE_MAPPING: 'Map response status codes (JSON format)',
   TAG: 'Group channels by tag for batch operations',
   REMARK: 'Internal notes (not shown to users)',

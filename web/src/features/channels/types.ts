@@ -91,6 +91,7 @@ export interface ChannelSettings {
 }
 
 export interface ChannelOtherSettings {
+  user_concurrency_limit?: number
   azure_responses_version?: string
   vertex_key_type?: 'json' | 'api_key'
   openrouter_enterprise?: boolean

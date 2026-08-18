@@ -289,3 +289,4 @@ custom_oauth.provider_id_field_invalid: "无法从提供商响应中提取用户
 generation.already_in_progress: "已有一个同类生成请求正在处理，请等待其结束后再提交。"
 generation.video_already_in_progress: "该用户已有一个视频任务正在处理，请等待其成功或失败后再提交新视频。"
 generation.concurrency_check_failed: "无法检查正在处理的生成请求，请稍后重试。"
+channel.user_concurrency_limit: "此渠道每个用户最多同时运行 {{.Limit}} 个对话请求，请等待正在运行的请求结束。"
