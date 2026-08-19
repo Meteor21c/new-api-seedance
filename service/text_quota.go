@@ -394,14 +394,67 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	return "openai"
 }
 
+func hasReportedTextUsage(usage *dto.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	if usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
+		usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.PromptCacheHitTokens != 0 {
+		return true
+	}
+	input := usage.PromptTokensDetails
+	if input.CachedTokens != 0 || input.CachedCreationTokens != 0 || input.CacheWriteTokens != 0 ||
+		input.TextTokens != 0 || input.AudioTokens != 0 || input.ImageTokens != 0 {
+		return true
+	}
+	output := usage.CompletionTokenDetails
+	return output.ReasoningTokens != 0 || output.TextTokens != 0 || output.AudioTokens != 0 || output.ImageTokens != 0
+}
+
+func estimateAbnormalStreamUsage(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) (*dto.Usage, bool) {
+	if relayInfo == nil || !relayInfo.IsStream || relayInfo.StreamStatus == nil || hasReportedTextUsage(usage) {
+		return usage, false
+	}
+	switch relayInfo.StreamStatus.EndReason {
+	case relaycommon.StreamEndReasonClientGone,
+		relaycommon.StreamEndReasonTimeout,
+		relaycommon.StreamEndReasonScannerErr,
+		relaycommon.StreamEndReasonPanic,
+		relaycommon.StreamEndReasonPingFail:
+	default:
+		return usage, false
+	}
+	promptTokens := relayInfo.GetEstimatePromptTokens()
+	if promptTokens <= 0 {
+		return usage, false
+	}
+	estimated := &dto.Usage{}
+	if usage != nil {
+		*estimated = *usage
+		if usage.InputTokensDetails != nil {
+			details := *usage.InputTokensDetails
+			estimated.InputTokensDetails = &details
+		}
+	}
+	estimated.BillingUsage = nil
+	estimated.PromptTokens = promptTokens
+	estimated.InputTokens = promptTokens
+	estimated.TotalTokens = promptTokens + estimated.CompletionTokens
+	estimated.UsageSemantic = usageSemanticFromUsage(relayInfo, estimated)
+	common.SetContextKey(ctx, constant.ContextKeyLocalCountTokens, true)
+	return estimated, true
+}
+
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
-	if usage == nil {
+	var estimated bool
+	billingUsage, estimated = estimateAbnormalStreamUsage(ctx, relayInfo, billingUsage)
+	if estimated {
+		originUsage = billingUsage
+		extraContent = append(extraContent, "异常流未返回 usage，已按本地输入 Token 估算计费")
+	} else if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")
-	}
-	if billingUsage != nil && billingUsage.BillingUsage != nil && billingUsage.BillingUsage.Estimated {
-		extraContent = append(extraContent, "上游 usage 缺失，已按本地输入 Token 估算计费")
 	}
 	if originUsage != nil {
 		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())

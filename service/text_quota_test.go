@@ -915,6 +915,67 @@ func TestCalculateTextQuotaSummaryZeroTokensStillBillsToolSurcharge(t *testing.T
 	assert.Equal(t, expected, summary.Quota)
 }
 
+func TestEstimateAbnormalStreamUsageUsesPromptEstimate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reasons := []relaycommon.StreamEndReason{
+		relaycommon.StreamEndReasonClientGone,
+		relaycommon.StreamEndReasonTimeout,
+		relaycommon.StreamEndReasonScannerErr,
+		relaycommon.StreamEndReasonPanic,
+		relaycommon.StreamEndReasonPingFail,
+	}
+	for _, reason := range reasons {
+		t.Run(string(reason), func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			streamStatus := relaycommon.NewStreamStatus()
+			streamStatus.SetEndReason(reason, nil)
+			info := &relaycommon.RelayInfo{IsStream: true, StreamStatus: streamStatus}
+			info.SetEstimatePromptTokens(123)
+
+			usage, estimated := estimateAbnormalStreamUsage(ctx, info, &dto.Usage{})
+
+			require.True(t, estimated)
+			require.NotNil(t, usage)
+			assert.Equal(t, 123, usage.PromptTokens)
+			assert.Equal(t, 123, usage.InputTokens)
+			assert.Equal(t, 123, usage.TotalTokens)
+			assert.Equal(t, usageBillingPathLocal, usageBillingPathForLog(common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), usage))
+		})
+	}
+}
+
+func TestEstimateAbnormalStreamUsageLeavesNormalAndReportedUsageUntouched(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name      string
+		reason    relaycommon.StreamEndReason
+		usage     *dto.Usage
+		isStream  bool
+		estimated bool
+	}{
+		{name: "normal done", reason: relaycommon.StreamEndReasonDone, usage: &dto.Usage{}, isStream: true},
+		{name: "normal eof", reason: relaycommon.StreamEndReasonEOF, usage: &dto.Usage{}, isStream: true},
+		{name: "reported usage", reason: relaycommon.StreamEndReasonClientGone, usage: &dto.Usage{PromptTokens: 10}, isStream: true},
+		{name: "non stream", reason: relaycommon.StreamEndReasonClientGone, usage: &dto.Usage{}, isStream: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			status := relaycommon.NewStreamStatus()
+			status.SetEndReason(tt.reason, nil)
+			info := &relaycommon.RelayInfo{IsStream: tt.isStream, StreamStatus: status}
+			info.SetEstimatePromptTokens(123)
+
+			usage, estimated := estimateAbnormalStreamUsage(ctx, info, tt.usage)
+
+			assert.Equal(t, tt.estimated, estimated)
+			assert.Same(t, tt.usage, usage)
+			assert.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens))
+		})
+	}
+}
+
 func TestCalculateTextQuotaSummaryDoesNotApplyRequestMultipliersToToolSurcharge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
