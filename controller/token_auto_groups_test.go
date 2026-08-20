@@ -135,6 +135,31 @@ func TestAddTokenPersistsOrderedAutoGroupsSnapshot(t *testing.T) {
 	assert.Equal(t, []string{"vip", "default"}, data.AutoGroups)
 }
 
+func TestAddSmartTextTokenNormalizesRoutingPolicy(t *testing.T) {
+	configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
+	user := setupTokenAutoGroupsControllerTest(t)
+	request := baseAutoTokenRequest("smart-text")
+	request["smart_text"] = true
+	request["group"] = "default"
+	request["cross_group_retry"] = false
+	request["auto_groups"] = []string{"default"}
+	request["model_limits_enabled"] = true
+	request["model_limits"] = "gpt-only"
+
+	ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
+	AddToken(ctx)
+	require.True(t, decodeAPIResponse(t, recorder).Success)
+
+	var token model.Token
+	require.NoError(t, model.DB.Where("name = ?", "smart-text").First(&token).Error)
+	assert.True(t, token.SmartText)
+	assert.Equal(t, "auto", token.Group)
+	assert.True(t, token.CrossGroupRetry)
+	assert.Empty(t, token.AutoGroups)
+	assert.False(t, token.ModelLimitsEnabled)
+	assert.Empty(t, token.ModelLimits)
+}
+
 func TestUpdateTokenAutoGroupsTriStateAndNonAutoCleanup(t *testing.T) {
 	tests := []struct {
 		name               string

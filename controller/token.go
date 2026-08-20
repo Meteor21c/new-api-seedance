@@ -256,6 +256,7 @@ func GetTokenUsage(c *gin.Context) {
 			"unlimited_quota":      token.UnlimitedQuota,
 			"model_limits":         token.GetModelLimitsMap(),
 			"model_limits_enabled": token.ModelLimitsEnabled,
+			"smart_text":           token.SmartText,
 			"expires_at":           expiredAt,
 		},
 	})
@@ -299,13 +300,16 @@ func AddToken(c *gin.Context) {
 		})
 		return
 	}
-	if token.Group == "auto" {
-		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
-			return
+	service.NormalizeSmartTextToken(&token)
+	if !token.SmartText {
+		if token.Group == "auto" {
+			if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
+				return
+			}
+		} else {
+			token.CrossGroupRetry = false
+			_ = token.SetAutoGroups(nil)
 		}
-	} else {
-		token.CrossGroupRetry = false
-		_ = token.SetAutoGroups(nil)
 	}
 	key, err := common.GenerateKey()
 	if err != nil {
@@ -328,6 +332,7 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		SmartText:          token.SmartText,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -407,12 +412,16 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
-		if token.Group != "auto" {
-			cleanToken.CrossGroupRetry = false
-			_ = cleanToken.SetAutoGroups(nil)
-		} else if request.AutoGroups.Set {
-			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
-				return
+		cleanToken.SmartText = token.SmartText
+		service.NormalizeSmartTextToken(cleanToken)
+		if !cleanToken.SmartText {
+			if token.Group != "auto" {
+				cleanToken.CrossGroupRetry = false
+				_ = cleanToken.SetAutoGroups(nil)
+			} else if request.AutoGroups.Set {
+				if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
+					return
+				}
 			}
 		}
 	}

@@ -258,6 +258,7 @@ export function ApiKeysMutateDrawer({
     isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
   const isFormInitialized = initializedTarget === formTarget
   const selectedGroup = form.watch('group')
+  const smartText = form.watch('smart_text')
 
   // Correct group after groups load: if the form value is not in available groups, fall back
   useEffect(() => {
@@ -414,35 +415,81 @@ export function ApiKeysMutateDrawer({
 
               <FormField
                 control={form.control}
-                name='group'
+                name='smart_text'
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Group')}</FormLabel>
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <div className='flex flex-col gap-0.5'>
+                      <FormLabel className='text-sm'>
+                        {t('Smart text key')}
+                      </FormLabel>
+                      <FormDescription className='text-xs'>
+                        {t(
+                          'Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied.'
+                        )}
+                      </FormDescription>
+                    </div>
                     <FormControl>
-                      <ApiKeyGroupCombobox
-                        options={groups}
-                        value={field.value}
-                        onValueChange={(group) => {
-                          field.onChange(group)
-                          if (group === 'auto') {
-                            form.setValue('cross_group_retry', true, {
-                              shouldDirty: true,
-                            })
-                            return
-                          }
-                          form.setValue('cross_group_retry', false, {
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={(checked) => {
+                          field.onChange(checked)
+                          if (!checked) return
+                          form.setValue('group', 'auto', {
+                            shouldDirty: true,
+                          })
+                          form.setValue('auto_groups_mode', 'inherit', {
+                            shouldDirty: true,
+                          })
+                          form.setValue('auto_groups', [], {
+                            shouldDirty: true,
+                            shouldValidate: false,
+                          })
+                          form.setValue('cross_group_retry', true, {
+                            shouldDirty: true,
+                          })
+                          form.setValue('model_limits', [], {
                             shouldDirty: true,
                           })
                         }}
-                        placeholder={t('Select a group')}
                       />
                     </FormControl>
-                    <FormMessage />
                   </FormItem>
                 )}
               />
 
-              {selectedGroup === 'auto' && (
+              {!smartText && (
+                <FormField
+                  control={form.control}
+                  name='group'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Group')}</FormLabel>
+                      <FormControl>
+                        <ApiKeyGroupCombobox
+                          options={groups}
+                          value={field.value}
+                          onValueChange={(group) => {
+                            field.onChange(group)
+                            if (group === 'auto') {
+                              form.setValue('cross_group_retry', true, {
+                                shouldDirty: true,
+                              })
+                              return
+                            }
+                            form.setValue('cross_group_retry', false, {
+                              shouldDirty: true,
+                            })
+                          }}
+                          placeholder={t('Select a group')}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {!smartText && selectedGroup === 'auto' && (
                 <FormField
                   control={form.control}
                   name='auto_groups'
@@ -483,7 +530,7 @@ export function ApiKeysMutateDrawer({
                 />
               )}
 
-              {selectedGroup === 'auto' && (
+              {!smartText && selectedGroup === 'auto' && (
                 <FormField
                   control={form.control}
                   name='cross_group_retry'
@@ -704,6 +751,7 @@ export function ApiKeysMutateDrawer({
                               }))}
                               selected={field.value}
                               onChange={field.onChange}
+                              disabled={smartText}
                               placeholder={t(
                                 'Select models (empty for allow all)'
                               )}

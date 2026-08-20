@@ -196,7 +196,7 @@ function selectComboboxOption(
 afterEach(() => {
   apiClient.get = originalGet
   apiClient.post = originalPost
-  localStorage.clear()
+  window.localStorage.clear()
   if (renderedDrawer) {
     renderedDrawer.queryClient.clear()
     renderedDrawer = null
@@ -204,6 +204,27 @@ afterEach(() => {
 })
 
 describe('API keys mutate drawer Auto group integration', () => {
+  test('creates a smart text key with dynamic Auto routing', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads)
+    await renderCreateDrawer()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Smart text key' }))
+    changeInput(getControlByLabel('Name'), 'smart-text')
+    fireEvent.click(findButton('Save changes', true))
+
+    await waitFor(() => expect(createdPayloads).toHaveLength(1))
+    expect(createdPayloads[0]).toMatchObject({
+      name: 'smart-text',
+      smart_text: true,
+      group: 'auto',
+      auto_groups: [],
+      cross_group_retry: true,
+      model_limits_enabled: false,
+      model_limits: '',
+    })
+  })
+
   test('inherits the root Auto order and sends an empty override for every batch-created key', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)

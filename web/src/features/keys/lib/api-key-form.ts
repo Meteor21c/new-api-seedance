@@ -44,10 +44,11 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       auto_groups_mode: z.enum(['inherit', 'custom']),
       auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
+      smart_text: z.boolean(),
       tokenCount: z.number().min(1).optional(),
     })
     .superRefine((data, ctx) => {
-      if (data.group === 'auto') {
+      if (!data.smart_text && data.group === 'auto') {
         if (
           data.auto_groups_mode === 'custom' &&
           data.auto_groups.length === 0
@@ -114,6 +115,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   auto_groups_mode: 'inherit',
   auto_groups: [],
   cross_group_retry: true,
+  smart_text: false,
   tokenCount: 1,
 }
 
@@ -139,6 +141,13 @@ export function getApiKeyFormDefaultValues(
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
+  const smartText = data.smart_text
+  let crossGroupRetry = false
+  if (smartText) {
+    crossGroupRetry = true
+  } else if (data.group === 'auto') {
+    crossGroupRetry = !!data.cross_group_retry
+  }
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -148,15 +157,16 @@ export function transformFormDataToPayload(
       ? Math.floor(data.expired_time.getTime() / 1000)
       : -1,
     unlimited_quota: data.unlimited_quota,
-    model_limits_enabled: data.model_limits.length > 0,
-    model_limits: data.model_limits.join(','),
+    model_limits_enabled: smartText ? false : data.model_limits.length > 0,
+    model_limits: smartText ? '' : data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
-    group: data.group || '',
+    group: smartText ? 'auto' : data.group || '',
     auto_groups:
-      data.group === 'auto' && data.auto_groups_mode === 'custom'
+      !smartText && data.group === 'auto' && data.auto_groups_mode === 'custom'
         ? data.auto_groups
         : [],
-    cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
+    cross_group_retry: crossGroupRetry,
+    smart_text: smartText,
   }
 }
 
@@ -193,6 +203,7 @@ export function transformApiKeyToFormDefaults(
     auto_groups_mode: autoGroupsMode,
     auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
+    smart_text: apiKey.smart_text,
     tokenCount: 1,
   }
 }

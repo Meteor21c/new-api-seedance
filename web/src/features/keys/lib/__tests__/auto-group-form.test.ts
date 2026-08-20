@@ -48,6 +48,7 @@ const baseApiKey: ApiKey = {
   group: 'auto',
   auto_groups: null,
   cross_group_retry: true,
+  smart_text: false,
   model_limits_enabled: false,
   model_limits: '',
   allow_ips: '',
@@ -149,6 +150,25 @@ describe('API key Auto group form mapping', () => {
     }
     expect(transformFormDataToPayload(nonAuto).auto_groups).toEqual([])
     expect(transformFormDataToPayload(nonAuto).cross_group_retry).toBe(false)
+  })
+
+  test('smart text mode overrides stale group and model restrictions', () => {
+    const payload = transformFormDataToPayload({
+      ...getApiKeyFormDefaultValues(false),
+      smart_text: true,
+      group: 'default',
+      auto_groups_mode: 'custom',
+      auto_groups: ['default'],
+      cross_group_retry: false,
+      model_limits: ['gpt-only'],
+    })
+
+    expect(payload.smart_text).toBe(true)
+    expect(payload.group).toBe('auto')
+    expect(payload.auto_groups).toEqual([])
+    expect(payload.cross_group_retry).toBe(true)
+    expect(payload.model_limits_enabled).toBe(false)
+    expect(payload.model_limits).toBe('')
   })
 
   test('rejects snapshots over the configured limit', () => {

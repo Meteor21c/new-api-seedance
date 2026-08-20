@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -45,4 +46,26 @@ func TestSetupContextForTokenMalformedAutoGroupsFailsClosed(t *testing.T) {
 	value, ok := common.GetContextKey(ctx, constant.ContextKeyTokenAutoGroups)
 	require.True(t, ok)
 	assert.Equal(t, []string{}, value)
+}
+
+func TestSetupContextForSmartTextTokenAllowsResponsesAndSetsContext(t *testing.T) {
+	ctx := newTokenAutoGroupsContext()
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	token := &model.Token{Id: 1, UserId: 2, SmartText: true, Group: "auto"}
+
+	require.NoError(t, SetupContextForToken(ctx, token))
+	assert.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyTokenSmartText))
+}
+
+func TestSetupContextForSmartTextTokenRejectsMediaEndpoint(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	token := &model.Token{Id: 1, UserId: 2, SmartText: true, Group: "auto"}
+
+	err := SetupContextForToken(ctx, token)
+
+	require.Error(t, err)
+	assert.True(t, ctx.IsAborted())
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
 }

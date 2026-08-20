@@ -17,8 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import { normalizeGeneratedImage } from './normalization'
 
@@ -39,22 +38,21 @@ function wrappedImageURL(dataURL: string): string {
 
 describe('image response normalization', () => {
   test('turns wrapped inline image URLs into reusable Base64 data', () => {
-    assert.deepEqual(
+    expect(
       normalizeGeneratedImage({
         url: wrappedImageURL('data:image/png;base64,aGVsbG8='),
         revised_prompt: 'draw a cat',
-      }),
-      {
-        url: undefined,
-        b64_json: 'aGVsbG8=',
-        revised_prompt: 'draw a cat',
-      }
-    )
+      })
+    ).toEqual({
+      url: undefined,
+      b64_json: 'aGVsbG8=',
+      revised_prompt: 'draw a cat',
+    })
   })
 
   test('leaves ordinary provider URLs unchanged', () => {
     const image = { url: 'https://cdn.example/image.png' }
-    assert.equal(normalizeGeneratedImage(image), image)
+    expect(normalizeGeneratedImage(image)).toBe(image)
   })
 
   test('does not replace an existing Base64 result', () => {
@@ -62,6 +60,6 @@ describe('image response normalization', () => {
       url: wrappedImageURL('data:image/png;base64,bmV3'),
       b64_json: 'ZXhpc3Rpbmc=',
     }
-    assert.equal(normalizeGeneratedImage(image), image)
+    expect(normalizeGeneratedImage(image)).toBe(image)
   })
 })

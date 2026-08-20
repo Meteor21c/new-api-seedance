@@ -17,8 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import { buildImageMcpPrompt, imageMcpEndpoint } from '../mcp-prompt'
 
@@ -36,12 +35,12 @@ describe('image MCP prompt', () => {
       imageMcpEndpoint('https://api.example.com/')
     )
 
-    assert.match(prompt, /meteor-image MCP/)
-    assert.match(prompt, /https:\/\/api\.example\.com\/mcp\/image/)
-    assert.match(prompt, /模型：gpt-image-2/)
-    assert.match(prompt, /图片数量：2/)
-    assert.match(prompt, /data\[\]\.b64_json/)
-    assert.doesNotMatch(prompt, /meteor-video MCP 生成图片/)
+    expect(prompt).toMatch(/meteor-image MCP/)
+    expect(prompt).toMatch(/https:\/\/api\.example\.com\/mcp\/image/)
+    expect(prompt).toMatch(/模型：gpt-image-2/)
+    expect(prompt).toMatch(/图片数量：2/)
+    expect(prompt).toMatch(/data\[\]\.b64_json/)
+    expect(prompt).not.toMatch(/meteor-video MCP 生成图片/)
   })
 
   test('warns that local reference bytes are not embedded in copied text', () => {
@@ -57,8 +56,8 @@ describe('image MCP prompt', () => {
       imageMcpEndpoint('https://api.example.com')
     )
 
-    assert.match(prompt, /本地文件：reference\.png/)
-    assert.match(prompt, /复制内容不包含本地文件字节/)
-    assert.match(prompt, /当前 meteor-image MCP 只支持文生图/)
+    expect(prompt).toMatch(/本地文件：reference\.png/)
+    expect(prompt).toMatch(/复制内容不包含本地文件字节/)
+    expect(prompt).toMatch(/当前 meteor-image MCP 只支持文生图/)
   })
 })

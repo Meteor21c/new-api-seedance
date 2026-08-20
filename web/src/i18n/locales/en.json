@@ -2234,7 +2234,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
     "For security, existing access tokens cannot be displayed. Regenerate only when you need a new token.": "For security, existing access tokens cannot be displayed. Regenerate only when you need a new token.",
@@ -2294,7 +2294,6 @@
     "Generate new backup codes for account recovery": "Generate new backup codes for account recovery",
     "Generate New Codes": "Generate New Codes",
     "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.": "Generate tokens from the Tokens page; you can scope them to specific models, groups, IPs, and rate-limits.",
-    "Generated image": "Generated image",
     "Generating new codes will invalidate all existing backup codes.": "Generating new codes will invalidate all existing backup codes.",
     "Generating...": "Generating...",
     "Generation quality preset": "Generation quality preset",
@@ -2482,7 +2481,6 @@
     "Ignore": "Ignore",
     "Ignored upstream models": "Ignored upstream models",
     "Image": "Image",
-    "Image Generation": "Image Generation",
     "Image In": "Image In",
     "Image input": "Image input",
     "Image input price": "Image input price",
@@ -5171,7 +5169,6 @@
     "Usage logs": "Usage logs",
     "Usage Logs": "Usage Logs",
     "Usage mode": "Usage mode",
-    "Usage-based": "Usage-based",
     "USD": "USD",
     "USD Exchange Rate": "USD Exchange Rate",
     "USD price per 1M input tokens.": "USD price per 1M input tokens.",
@@ -5493,6 +5490,9 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Smart text": "Smart text",
+    "Smart text key": "Smart text key",
+    "Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied.": "Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied."
   }
 }

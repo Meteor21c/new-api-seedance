@@ -17,12 +17,14 @@ func TestTokenAutoGroupsRoundTripThroughRedisHashCache(t *testing.T) {
 		Name:       "auto-cache",
 		Group:      "auto",
 		AutoGroups: `["vip","default"]`,
+		SmartText:  true,
 	}
 
 	require.NoError(t, cacheSetTokenForTest(token))
 	cached, err := cacheGetTokenByKey(token.Key)
 	require.NoError(t, err)
 	assert.Equal(t, token.AutoGroups, cached.AutoGroups)
+	assert.True(t, cached.SmartText)
 	groups, err := cached.GetAutoGroups()
 	require.NoError(t, err)
 	assert.Equal(t, []string{"vip", "default"}, groups)

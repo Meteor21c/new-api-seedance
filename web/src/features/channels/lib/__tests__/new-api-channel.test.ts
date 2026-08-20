@@ -99,12 +99,12 @@ describe('New API channel', () => {
       user_concurrency_limit: 3,
       settings: '{"custom_setting":"preserved"}',
     }
-    assert.equal(channelFormSchema.safeParse(limited).success, true)
+    expect(channelFormSchema.safeParse(limited).success).toBe(true)
 
     const payload = transformFormDataToUpdatePayload(limited, 42)
     const settings = JSON.parse(String(payload.settings))
-    assert.equal(settings.user_concurrency_limit, 3)
-    assert.equal(settings.custom_setting, 'preserved')
+    expect(settings.user_concurrency_limit).toBe(3)
+    expect(settings.custom_setting).toBe('preserved')
 
     const unlimitedPayload = transformFormDataToUpdatePayload(
       {
@@ -115,20 +115,18 @@ describe('New API channel', () => {
       42
     )
     const unlimitedSettings = JSON.parse(String(unlimitedPayload.settings))
-    assert.equal('user_concurrency_limit' in unlimitedSettings, false)
-    assert.equal(
+    expect('user_concurrency_limit' in unlimitedSettings).toBe(false)
+    expect(
       channelFormSchema.safeParse({
         ...limited,
         user_concurrency_limit: -1,
-      }).success,
-      false
-    )
-    assert.equal(
+      }).success
+    ).toBe(false)
+    expect(
       channelFormSchema.safeParse({
         ...limited,
         user_concurrency_limit: 1001,
-      }).success,
-      false
-    )
+      }).success
+    ).toBe(false)
   })
 })

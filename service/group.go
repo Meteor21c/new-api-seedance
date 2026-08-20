@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -69,6 +70,30 @@ func GetUserAutoGroup(userGroup string) []string {
 	return autoGroups
 }
 
+// GetUserSmartTextGroups returns every currently authorized concrete group.
+// The configured Auto order remains first; newly authorized groups are added
+// deterministically so smart keys gain text models without being reissued.
+func GetUserSmartTextGroups(userGroup string) []string {
+	groups := GetUserAutoGroup(userGroup)
+	seen := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		seen[group] = struct{}{}
+	}
+
+	remaining := make([]string, 0)
+	for group := range GetUserUsableGroups(userGroup) {
+		if !IsUserSelectableGroup(userGroup, group) {
+			continue
+		}
+		if _, ok := seen[group]; ok {
+			continue
+		}
+		remaining = append(remaining, group)
+	}
+	sort.Strings(remaining)
+	return append(groups, remaining...)
+}
+
 // FilterUserTokenAutoGroups applies current permissions before the current
 // per-token limit. It intentionally does not fall back to the global Auto list.
 func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
@@ -95,6 +120,9 @@ func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
 // The absence of the context value means that the token inherits the complete
 // global Auto list; a present (even empty) value is an explicit token snapshot.
 func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
+	if common.GetContextKeyBool(c, constant.ContextKeyTokenSmartText) {
+		return GetUserSmartTextGroups(userGroup)
+	}
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups)
 	if !ok {
 		return GetUserAutoGroup(userGroup)

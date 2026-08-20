@@ -70,3 +70,15 @@ func TestGetRequestAutoGroupsDoesNotFallBackAfterPermissionChange(t *testing.T) 
 
 	assert.Empty(t, groups)
 }
+
+func TestGetRequestAutoGroupsSmartTextIncludesAllAuthorizedGroups(t *testing.T) {
+	configureRequestAutoGroupsTest(t)
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip"]`))
+	ctx := newRequestAutoGroupsContext()
+	common.SetContextKey(ctx, constant.ContextKeyTokenSmartText, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
+
+	groups := GetRequestAutoGroups(ctx, "default")
+
+	assert.Equal(t, []string{"vip", "default", "svip"}, groups)
+}

@@ -38,6 +38,46 @@ afterEach(() => {
   cleanup()
 })
 
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>()
+
+  get length(): number {
+    return this.values.size
+  }
+
+  clear(): void {
+    this.values.clear()
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+}
+
+// Newer Node runtimes may expose an incomplete localStorage when no
+// --localstorage-file is configured. Keep frontend tests deterministic.
+const localStorageMock = new MemoryStorage()
+Object.defineProperty(window, 'localStorage', {
+  configurable: true,
+  value: localStorageMock,
+})
+Object.defineProperty(globalThis, 'localStorage', {
+  configurable: true,
+  value: localStorageMock,
+})
+
 Object.defineProperty(window, 'matchMedia', {
   configurable: true,
   value: (query: string): MediaQueryList => ({
