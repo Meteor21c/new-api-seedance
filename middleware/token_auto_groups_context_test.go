@@ -51,10 +51,11 @@ func TestSetupContextForTokenMalformedAutoGroupsFailsClosed(t *testing.T) {
 func TestSetupContextForSmartTextTokenAllowsResponsesAndSetsContext(t *testing.T) {
 	ctx := newTokenAutoGroupsContext()
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	token := &model.Token{Id: 1, UserId: 2, SmartText: true, Group: "auto"}
+	token := &model.Token{Id: 1, UserId: 2, SmartText: true, Group: "auto", SmartRoutePolicy: "quality"}
 
 	require.NoError(t, SetupContextForToken(ctx, token))
 	assert.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyTokenSmartText))
+	assert.Equal(t, "quality", common.GetContextKeyString(ctx, constant.ContextKeyTokenSmartRoutePolicy))
 }
 
 func TestSetupContextForSmartTextTokenRejectsMediaEndpoint(t *testing.T) {

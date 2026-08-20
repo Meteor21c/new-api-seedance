@@ -204,12 +204,16 @@ afterEach(() => {
 })
 
 describe('API keys mutate drawer Auto group integration', () => {
-  test('creates a smart text key with dynamic Auto routing', async () => {
+  test('creates a Smart API key with a group subset and quality-first routing', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)
     await renderCreateDrawer()
 
-    fireEvent.click(screen.getByRole('switch', { name: 'Smart text key' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Smart API' }))
+    fireEvent.click(
+      screen.getByRole('switch', { name: 'Use routing group default' })
+    )
+    fireEvent.click(screen.getByRole('radio', { name: /Quality first/ }))
     changeInput(getControlByLabel('Name'), 'smart-text')
     fireEvent.click(findButton('Save changes', true))
 
@@ -218,8 +222,9 @@ describe('API keys mutate drawer Auto group integration', () => {
       name: 'smart-text',
       smart_text: true,
       group: 'auto',
-      auto_groups: [],
+      auto_groups: ['vip'],
       cross_group_retry: true,
+      smart_route_policy: 'quality',
       model_limits_enabled: false,
       model_limits: '',
     })

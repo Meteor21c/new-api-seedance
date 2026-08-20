@@ -5320,8 +5320,20 @@
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
     "Zoom": "Zoom",
-    "Smart text": "Smart text",
-    "Smart text key": "Smart text key",
-    "Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied.": "Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied."
+    "Smart API": "Smart API",
+    "Route intelligently based on your custom policy. Model and framework mismatches may affect output quality.": "Route intelligently based on your custom policy. Model and framework mismatches may affect output quality.",
+    "Routing groups": "Routing groups",
+    "Only administrator-approved groups are shown. Choose at least one group.": "Only administrator-approved groups are shown. Choose at least one group.",
+    "Multiplier: {{ratio}}x": "Multiplier: {{ratio}}x",
+    "Use routing group {{group}}": "Use routing group {{group}}",
+    "No Smart API groups are enabled by the administrator.": "No Smart API groups are enabled by the administrator.",
+    "Routing strategy": "Routing strategy",
+    "Economy first": "Economy first",
+    "Use the administrator order from top to bottom.": "Use the administrator order from top to bottom.",
+    "Quality first": "Quality first",
+    "Use the reverse of the administrator order.": "Use the reverse of the administrator order.",
+    "Select at least one group for Smart API routing": "Select at least one group for Smart API routing",
+    "This is the Smart API allowlist and economy-first order. Unlisted groups never participate; quality-first reverses this order.": "This is the Smart API allowlist and economy-first order. Unlisted groups never participate; quality-first reverses this order.",
+    "Limits only ordinary token-specific Auto snapshots. Smart API selections and global Auto inheritance remain unlimited.": "Limits only ordinary token-specific Auto snapshots. Smart API selections and global Auto inheritance remain unlimited."
   }
 }

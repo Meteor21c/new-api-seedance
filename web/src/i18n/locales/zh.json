@@ -5500,8 +5500,20 @@
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
     "Zoom": "缩放",
-    "Smart text": "智能文本",
-    "Smart text key": "智能文本 Key",
-    "Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied.": "使用此 Key 调用所有已授权的文本模型。保留 Codex、Claude、MCP、技能和函数工具调用；禁止图片、音频和视频接口。"
+    "Smart API": "智能 API",
+    "Route intelligently based on your custom policy. Model and framework mismatches may affect output quality.": "根据自定义策略智能路由，但是注意选择的模型和框架不匹配可能对生成结果有影响。",
+    "Routing groups": "参与路由的分组",
+    "Only administrator-approved groups are shown. Choose at least one group.": "仅显示管理员允许的分组，请至少选择一个分组。",
+    "Multiplier: {{ratio}}x": "倍率：{{ratio}}x",
+    "Use routing group {{group}}": "使用路由分组 {{group}}",
+    "No Smart API groups are enabled by the administrator.": "管理员尚未启用任何智能 API 分组。",
+    "Routing strategy": "路由策略",
+    "Economy first": "经济优先",
+    "Use the administrator order from top to bottom.": "按照管理员配置的顺序从上到下路由。",
+    "Quality first": "质量优先",
+    "Use the reverse of the administrator order.": "按照管理员配置顺序的倒序路由。",
+    "Select at least one group for Smart API routing": "请至少选择一个参与智能 API 路由的分组",
+    "This is the Smart API allowlist and economy-first order. Unlisted groups never participate; quality-first reverses this order.": "这里是智能 API 的分组白名单和经济优先顺序。未加入的分组不会参与路由；质量优先会按此顺序倒序路由。",
+    "Limits only ordinary token-specific Auto snapshots. Smart API selections and global Auto inheritance remain unlimited.": "仅限制普通令牌的 Auto 自定义快照，不限制智能 API 的分组选择和全局 Auto 继承。"
   }
 }

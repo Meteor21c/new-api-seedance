@@ -7,6 +7,11 @@ import (
 	"github.com/QuantumNous/new-api/model"
 )
 
+const (
+	SmartRoutePolicyEconomy = "economy"
+	SmartRoutePolicyQuality = "quality"
+)
+
 // NormalizeSmartTextToken keeps smart text keys on the existing Auto routing
 // path and removes stale restrictions that would narrow their dynamic model
 // pool. Media endpoints are enforced separately at authentication time.
@@ -16,9 +21,16 @@ func NormalizeSmartTextToken(token *model.Token) {
 	}
 	token.Group = "auto"
 	token.CrossGroupRetry = true
-	token.AutoGroups = ""
 	token.ModelLimitsEnabled = false
 	token.ModelLimits = ""
+	token.SmartRoutePolicy = NormalizeSmartRoutePolicy(token.SmartRoutePolicy)
+}
+
+func NormalizeSmartRoutePolicy(policy string) string {
+	if strings.EqualFold(strings.TrimSpace(policy), SmartRoutePolicyQuality) {
+		return SmartRoutePolicyQuality
+	}
+	return SmartRoutePolicyEconomy
 }
 
 // IsSmartTextRequest defines the public protocol surface of a smart text key.

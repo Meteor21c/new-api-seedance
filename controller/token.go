@@ -47,6 +47,7 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	}
 	maskedToken := *token
 	maskedToken.Key = token.GetMaskedKey()
+	maskedToken.SmartRoutePolicy = service.NormalizeSmartRoutePolicy(token.SmartRoutePolicy)
 	autoGroups, err := token.GetAutoGroups()
 	if err != nil {
 		common.SysError(fmt.Sprintf("failed to parse auto groups for token %d: %v", token.Id, err))
@@ -110,6 +111,47 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 	}
 
 	if err := token.SetAutoGroups(groups); err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	return true
+}
+
+func setTokenSmartGroups(c *gin.Context, token *model.Token, groups []string) bool {
+	if len(groups) == 0 {
+		common.ApiErrorI18n(c, i18n.MsgTokenSmartGroupsRequired)
+		return false
+	}
+
+	userGroup, err := getTokenRequestUserGroup(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	allowed := service.GetUserAutoGroup(userGroup)
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, group := range allowed {
+		allowedSet[group] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		if _, ok := seen[group]; ok {
+			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsDuplicate, map[string]any{"Group": group})
+			return false
+		}
+		seen[group] = struct{}{}
+		if _, ok := allowedSet[group]; !ok {
+			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": group})
+			return false
+		}
+	}
+
+	normalized := service.FilterUserSmartGroups(userGroup, groups)
+	if len(normalized) == 0 {
+		common.ApiErrorI18n(c, i18n.MsgTokenSmartGroupsRequired)
+		return false
+	}
+	if err := token.SetAutoGroups(normalized); err != nil {
 		common.ApiError(c, err)
 		return false
 	}
@@ -257,6 +299,7 @@ func GetTokenUsage(c *gin.Context) {
 			"model_limits":         token.GetModelLimitsMap(),
 			"model_limits_enabled": token.ModelLimitsEnabled,
 			"smart_text":           token.SmartText,
+			"smart_route_policy":   service.NormalizeSmartRoutePolicy(token.SmartRoutePolicy),
 			"expires_at":           expiredAt,
 		},
 	})
@@ -301,7 +344,20 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	service.NormalizeSmartTextToken(&token)
-	if !token.SmartText {
+	if token.SmartText {
+		groups := request.AutoGroups.Groups
+		if !request.AutoGroups.Set {
+			userGroup, groupErr := getTokenRequestUserGroup(c)
+			if groupErr != nil {
+				common.ApiError(c, groupErr)
+				return
+			}
+			groups = service.GetUserAutoGroup(userGroup)
+		}
+		if !setTokenSmartGroups(c, &token, groups) {
+			return
+		}
+	} else {
 		if token.Group == "auto" {
 			if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 				return
@@ -333,6 +389,7 @@ func AddToken(c *gin.Context) {
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
 		SmartText:          token.SmartText,
+		SmartRoutePolicy:   token.SmartRoutePolicy,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -403,6 +460,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.Status = token.Status
 	} else {
 		// If you add more fields, please also update token.Update()
+		wasSmartText := cleanToken.SmartText
 		cleanToken.Name = token.Name
 		cleanToken.ExpiredTime = token.ExpiredTime
 		cleanToken.RemainQuota = token.RemainQuota
@@ -413,8 +471,24 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
 		cleanToken.SmartText = token.SmartText
+		cleanToken.SmartRoutePolicy = token.SmartRoutePolicy
 		service.NormalizeSmartTextToken(cleanToken)
-		if !cleanToken.SmartText {
+		if cleanToken.SmartText {
+			if request.AutoGroups.Set || !wasSmartText {
+				groups := request.AutoGroups.Groups
+				if !request.AutoGroups.Set {
+					userGroup, groupErr := getTokenRequestUserGroup(c)
+					if groupErr != nil {
+						common.ApiError(c, groupErr)
+						return
+					}
+					groups = service.GetUserAutoGroup(userGroup)
+				}
+				if !setTokenSmartGroups(c, cleanToken, groups) {
+					return
+				}
+			}
+		} else {
 			if token.Group != "auto" {
 				cleanToken.CrossGroupRetry = false
 				_ = cleanToken.SetAutoGroups(nil)

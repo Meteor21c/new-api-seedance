@@ -45,9 +45,18 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
       smart_text: z.boolean(),
+      smart_route_policy: z.enum(['economy', 'quality']),
       tokenCount: z.number().min(1).optional(),
     })
     .superRefine((data, ctx) => {
+      if (data.smart_text && data.auto_groups.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['auto_groups'],
+          message: t('Select at least one group for Smart API routing'),
+        })
+      }
+
       if (!data.smart_text && data.group === 'auto') {
         if (
           data.auto_groups_mode === 'custom' &&
@@ -116,6 +125,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   auto_groups: [],
   cross_group_retry: true,
   smart_text: false,
+  smart_route_policy: 'economy',
   tokenCount: 1,
 }
 
@@ -148,6 +158,12 @@ export function transformFormDataToPayload(
   } else if (data.group === 'auto') {
     crossGroupRetry = !!data.cross_group_retry
   }
+  let autoGroups: string[] = []
+  if (smartText) {
+    autoGroups = data.auto_groups
+  } else if (data.group === 'auto' && data.auto_groups_mode === 'custom') {
+    autoGroups = data.auto_groups
+  }
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -161,12 +177,10 @@ export function transformFormDataToPayload(
     model_limits: smartText ? '' : data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
     group: smartText ? 'auto' : data.group || '',
-    auto_groups:
-      !smartText && data.group === 'auto' && data.auto_groups_mode === 'custom'
-        ? data.auto_groups
-        : [],
+    auto_groups: autoGroups,
     cross_group_retry: crossGroupRetry,
     smart_text: smartText,
+    smart_route_policy: data.smart_route_policy,
   }
 }
 
@@ -176,13 +190,21 @@ export function transformFormDataToPayload(
 export function transformApiKeyToFormDefaults(
   apiKey: ApiKey,
   availableAutoGroups: string[] = [],
-  maxAutoGroups = 5
+  maxAutoGroups = 5,
+  smartAllowedGroups: string[] = availableAutoGroups
 ): ApiKeyFormValues {
   const availableSet = new Set(availableAutoGroups)
   const storedAutoGroups = apiKey.auto_groups ?? []
-  const autoGroups = storedAutoGroups
+  let autoGroups = storedAutoGroups
     .filter((group) => availableSet.has(group))
     .slice(0, Math.max(0, maxAutoGroups))
+  if (apiKey.smart_text) {
+    const storedSet = new Set(storedAutoGroups)
+    autoGroups =
+      storedSet.size > 0
+        ? smartAllowedGroups.filter((group) => storedSet.has(group))
+        : [...smartAllowedGroups]
+  }
   const autoGroupsMode = storedAutoGroups.length > 0 ? 'custom' : 'inherit'
 
   return {
@@ -204,6 +226,7 @@ export function transformApiKeyToFormDefaults(
     auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
     smart_text: apiKey.smart_text,
+    smart_route_policy: apiKey.smart_route_policy,
     tokenCount: 1,
   }
 }

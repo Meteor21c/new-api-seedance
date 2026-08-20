@@ -354,7 +354,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
           <CardTitle>{t('Auto assignment order')}</CardTitle>
           <CardDescription>
             {t(
-              'Priority order for tokens in the auto group. The system tries groups from top to bottom.'
+              'This is the Smart API allowlist and economy-first order. Unlisted groups never participate; quality-first reverses this order.'
             )}
           </CardDescription>
         </CardHeader>
@@ -369,41 +369,53 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
             />
             {autoGroupsList.length > 0 && (
               <div className='space-y-2'>
-                {autoGroupsList.map((group, index) => (
-                  <div
-                    key={group}
-                    className='flex items-center gap-2 rounded-md border p-3'
-                  >
-                    <GripVertical className='text-muted-foreground h-4 w-4' />
-                    <span className='font-medium'>{group}</span>
-                    {!registryNames.includes(group) && <UnknownGroupBadge />}
-                    <div className='ml-auto flex gap-1'>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        disabled={index === 0}
-                        onClick={() => handleAutoGroupMove(index, 'up')}
-                      >
-                        ↑
-                      </Button>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        disabled={index === autoGroupsList.length - 1}
-                        onClick={() => handleAutoGroupMove(index, 'down')}
-                      >
-                        ↓
-                      </Button>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        onClick={() => handleAutoGroupDelete(index)}
-                      >
-                        <Trash2 className='h-4 w-4' />
-                      </Button>
+                {autoGroupsList.map((group, index) => {
+                  const ratio = registry.find(
+                    (entry) => entry.name === group
+                  )?.ratio
+                  return (
+                    <div
+                      key={group}
+                      className='flex items-center gap-2 rounded-md border p-3'
+                    >
+                      <GripVertical className='text-muted-foreground h-4 w-4' />
+                      <span className='font-medium'>{group}</span>
+                      {ratio !== undefined && (
+                        <StatusBadge
+                          label={t('Multiplier: {{ratio}}x', { ratio })}
+                          variant='neutral'
+                          copyable={false}
+                        />
+                      )}
+                      {!registryNames.includes(group) && <UnknownGroupBadge />}
+                      <div className='ml-auto flex gap-1'>
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          disabled={index === 0}
+                          onClick={() => handleAutoGroupMove(index, 'up')}
+                        >
+                          ↑
+                        </Button>
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          disabled={index === autoGroupsList.length - 1}
+                          onClick={() => handleAutoGroupMove(index, 'down')}
+                        >
+                          ↓
+                        </Button>
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          onClick={() => handleAutoGroupDelete(index)}
+                        >
+                          <Trash2 className='h-4 w-4' />
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>

@@ -71,14 +71,25 @@ func TestGetRequestAutoGroupsDoesNotFallBackAfterPermissionChange(t *testing.T) 
 	assert.Empty(t, groups)
 }
 
-func TestGetRequestAutoGroupsSmartTextIncludesAllAuthorizedGroups(t *testing.T) {
+func TestGetRequestAutoGroupsSmartTextUsesAdminAllowlistAndPolicy(t *testing.T) {
 	configureRequestAutoGroupsTest(t)
-	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip"]`))
 	ctx := newRequestAutoGroupsContext()
 	common.SetContextKey(ctx, constant.ContextKeyTokenSmartText, true)
-	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"svip", "vip", "default", "not-allowed"})
 
-	groups := GetRequestAutoGroups(ctx, "default")
+	assert.Equal(t, []string{"vip", "default", "svip"}, GetRequestAutoGroups(ctx, "default"))
 
-	assert.Equal(t, []string{"vip", "default", "svip"}, groups)
+	common.SetContextKey(ctx, constant.ContextKeyTokenSmartRoutePolicy, SmartRoutePolicyQuality)
+	assert.Equal(t, []string{"svip", "default", "vip"}, GetRequestAutoGroups(ctx, "default"))
+
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip"]`))
+	assert.Equal(t, []string{"vip"}, GetRequestAutoGroups(ctx, "default"))
+}
+
+func TestGetRequestAutoGroupsLegacySmartTextInheritsAdminAllowlist(t *testing.T) {
+	configureRequestAutoGroupsTest(t)
+	ctx := newRequestAutoGroupsContext()
+	common.SetContextKey(ctx, constant.ContextKeyTokenSmartText, true)
+
+	assert.Equal(t, []string{"vip", "default", "svip"}, GetRequestAutoGroups(ctx, "default"))
 }

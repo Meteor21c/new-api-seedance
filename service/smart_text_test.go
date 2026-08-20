@@ -16,15 +16,17 @@ func TestNormalizeSmartTextTokenUsesDynamicAutoRouting(t *testing.T) {
 		AutoGroups:         `["default"]`,
 		ModelLimitsEnabled: true,
 		ModelLimits:        "gpt-only",
+		SmartRoutePolicy:   "QUALITY",
 	}
 
 	NormalizeSmartTextToken(token)
 
 	assert.Equal(t, "auto", token.Group)
 	assert.True(t, token.CrossGroupRetry)
-	assert.Empty(t, token.AutoGroups)
+	assert.JSONEq(t, `["default"]`, token.AutoGroups)
 	assert.False(t, token.ModelLimitsEnabled)
 	assert.Empty(t, token.ModelLimits)
+	assert.Equal(t, SmartRoutePolicyQuality, token.SmartRoutePolicy)
 }
 
 func TestIsSmartTextRequestAllowsTextProtocolsAndRejectsMedia(t *testing.T) {

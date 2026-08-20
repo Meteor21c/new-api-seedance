@@ -51,6 +51,13 @@ export const apiKeySchema = z.object({
     }, z.boolean())
     .optional()
     .default(false),
+  smart_route_policy: z
+    .preprocess(
+      (value) => (value === 'quality' ? 'quality' : 'economy'),
+      z.enum(['economy', 'quality'])
+    )
+    .optional()
+    .default('economy'),
   model_limits_enabled: z.boolean(),
   model_limits: z.string().nullish().default(''),
   allow_ips: z.string().nullish().default(''),
@@ -103,6 +110,7 @@ export interface ApiKeyFormData {
   auto_groups: string[]
   cross_group_retry: boolean
   smart_text: boolean
+  smart_route_policy: 'economy' | 'quality'
 }
 
 export interface TokenAutoGroupsConfig {

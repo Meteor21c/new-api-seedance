@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
@@ -142,7 +143,8 @@ func TestAddSmartTextTokenNormalizesRoutingPolicy(t *testing.T) {
 	request["smart_text"] = true
 	request["group"] = "default"
 	request["cross_group_retry"] = false
-	request["auto_groups"] = []string{"default"}
+	request["auto_groups"] = []string{"vip", "default"}
+	request["smart_route_policy"] = "quality"
 	request["model_limits_enabled"] = true
 	request["model_limits"] = "gpt-only"
 
@@ -155,9 +157,38 @@ func TestAddSmartTextTokenNormalizesRoutingPolicy(t *testing.T) {
 	assert.True(t, token.SmartText)
 	assert.Equal(t, "auto", token.Group)
 	assert.True(t, token.CrossGroupRetry)
-	assert.Empty(t, token.AutoGroups)
+	assert.JSONEq(t, `["default","vip"]`, token.AutoGroups)
+	assert.Equal(t, service.SmartRoutePolicyQuality, token.SmartRoutePolicy)
 	assert.False(t, token.ModelLimitsEnabled)
 	assert.Empty(t, token.ModelLimits)
+}
+
+func TestAddSmartTextTokenRejectsEmptyOrDisallowedGroups(t *testing.T) {
+	tests := []struct {
+		name   string
+		groups []string
+	}{
+		{name: "empty"},
+		{name: "not in admin allowlist", groups: []string{"missing"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
+			user := setupTokenAutoGroupsControllerTest(t)
+			request := baseAutoTokenRequest("invalid-smart-" + test.name)
+			request["smart_text"] = true
+			request["auto_groups"] = test.groups
+
+			ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
+			AddToken(ctx)
+
+			assert.False(t, decodeAPIResponse(t, recorder).Success)
+			var count int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&count).Error)
+			assert.Zero(t, count)
+		})
+	}
 }
 
 func TestUpdateTokenAutoGroupsTriStateAndNonAutoCleanup(t *testing.T) {

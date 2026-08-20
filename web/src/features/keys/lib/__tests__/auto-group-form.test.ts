@@ -49,6 +49,7 @@ const baseApiKey: ApiKey = {
   auto_groups: null,
   cross_group_retry: true,
   smart_text: false,
+  smart_route_policy: 'economy',
   model_limits_enabled: false,
   model_limits: '',
   allow_ips: '',
@@ -152,7 +153,7 @@ describe('API key Auto group form mapping', () => {
     expect(transformFormDataToPayload(nonAuto).cross_group_retry).toBe(false)
   })
 
-  test('smart text mode overrides stale group and model restrictions', () => {
+  test('Smart API mode keeps the selected groups and routing strategy', () => {
     const payload = transformFormDataToPayload({
       ...getApiKeyFormDefaultValues(false),
       smart_text: true,
@@ -161,14 +162,45 @@ describe('API key Auto group form mapping', () => {
       auto_groups: ['default'],
       cross_group_retry: false,
       model_limits: ['gpt-only'],
+      smart_route_policy: 'quality',
     })
 
     expect(payload.smart_text).toBe(true)
     expect(payload.group).toBe('auto')
-    expect(payload.auto_groups).toEqual([])
+    expect(payload.auto_groups).toEqual(['default'])
     expect(payload.cross_group_retry).toBe(true)
     expect(payload.model_limits_enabled).toBe(false)
     expect(payload.model_limits).toBe('')
+    expect(payload.smart_route_policy).toBe('quality')
+  })
+
+  test('Smart API requires at least one routing group', () => {
+    const result = getApiKeyFormSchema(t).safeParse({
+      ...getApiKeyFormDefaultValues(false),
+      name: 'smart-empty',
+      smart_text: true,
+      auto_groups: [],
+    })
+
+    expect(result.success).toBe(false)
+    if (result.success) return
+    expect(result.error.issues[0]?.path).toEqual(['auto_groups'])
+  })
+
+  test('legacy Smart API keys inherit the current administrator allowlist', () => {
+    const defaults = transformApiKeyToFormDefaults(
+      {
+        ...baseApiKey,
+        smart_text: true,
+        auto_groups: null,
+      },
+      ['default', 'vip', 'other'],
+      2,
+      ['vip', 'default']
+    )
+
+    expect(defaults.auto_groups).toEqual(['vip', 'default'])
+    expect(defaults.smart_route_policy).toBe('economy')
   })
 
   test('rejects snapshots over the configured limit', () => {

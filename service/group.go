@@ -1,7 +1,7 @@
 package service
 
 import (
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -70,28 +70,21 @@ func GetUserAutoGroup(userGroup string) []string {
 	return autoGroups
 }
 
-// GetUserSmartTextGroups returns every currently authorized concrete group.
-// The configured Auto order remains first; newly authorized groups are added
-// deterministically so smart keys gain text models without being reissued.
-func GetUserSmartTextGroups(userGroup string) []string {
-	groups := GetUserAutoGroup(userGroup)
-	seen := make(map[string]struct{}, len(groups))
-	for _, group := range groups {
-		seen[group] = struct{}{}
+// FilterUserSmartGroups intersects a token selection with the administrator's
+// Auto allowlist while preserving the administrator-defined economy order.
+func FilterUserSmartGroups(userGroup string, selected []string) []string {
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, group := range selected {
+		selectedSet[group] = struct{}{}
 	}
 
-	remaining := make([]string, 0)
-	for group := range GetUserUsableGroups(userGroup) {
-		if !IsUserSelectableGroup(userGroup, group) {
-			continue
+	filtered := make([]string, 0, len(selectedSet))
+	for _, group := range GetUserAutoGroup(userGroup) {
+		if _, ok := selectedSet[group]; ok {
+			filtered = append(filtered, group)
 		}
-		if _, ok := seen[group]; ok {
-			continue
-		}
-		remaining = append(remaining, group)
 	}
-	sort.Strings(remaining)
-	return append(groups, remaining...)
+	return filtered
 }
 
 // FilterUserTokenAutoGroups applies current permissions before the current
@@ -121,7 +114,18 @@ func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
 // global Auto list; a present (even empty) value is an explicit token snapshot.
 func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
 	if common.GetContextKeyBool(c, constant.ContextKeyTokenSmartText) {
-		return GetUserSmartTextGroups(userGroup)
+		groups := GetUserAutoGroup(userGroup)
+		if value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups); ok {
+			selected, valid := value.([]string)
+			if !valid {
+				return []string{}
+			}
+			groups = FilterUserSmartGroups(userGroup, selected)
+		}
+		if common.GetContextKeyString(c, constant.ContextKeyTokenSmartRoutePolicy) == SmartRoutePolicyQuality {
+			slices.Reverse(groups)
+		}
+		return groups
 	}
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups)
 	if !ok {

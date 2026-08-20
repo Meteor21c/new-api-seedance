@@ -192,7 +192,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                       </FormControl>
                       <FormDescription>
                         {t(
-                          'Limits only token-specific Auto snapshots. Global Auto inheritance remains unlimited.'
+                          'Limits only ordinary token-specific Auto snapshots. Smart API selections and global Auto inheritance remain unlimited.'
                         )}
                       </FormDescription>
                       <FormMessage />

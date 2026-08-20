@@ -509,6 +509,7 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 	common.SetContextKey(c, constant.ContextKeyTokenGroup, token.Group)
 	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
 	common.SetContextKey(c, constant.ContextKeyTokenSmartText, token.SmartText)
+	common.SetContextKey(c, constant.ContextKeyTokenSmartRoutePolicy, service.NormalizeSmartRoutePolicy(token.SmartRoutePolicy))
 	if token.AutoGroups != "" {
 		autoGroups, err := token.GetAutoGroups()
 		if err != nil {

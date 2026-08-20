@@ -51,7 +51,8 @@ token.db_error: "无效的令牌，数据库查询出错，请联系管理员"
 token.auto_groups_too_many: "每个令牌最多可选择 {{.Max}} 个 Auto 分组"
 token.auto_groups_duplicate: "Auto 分组 {{.Group}} 重复"
 token.auto_groups_invalid: "Auto 分组 {{.Group}} 不可用或无权访问"
-token.smart_text_endpoint_forbidden: "该智能文本 Key 仅支持文本生成接口"
+token.smart_text_endpoint_forbidden: "该智能 API Key 不支持当前请求接口"
+token.smart_groups_required: "请至少选择一个参与智能 API 路由的分组"
 
 # Redemption messages
 redemption.name_length: "兑换码名称长度必须在1-20之间"

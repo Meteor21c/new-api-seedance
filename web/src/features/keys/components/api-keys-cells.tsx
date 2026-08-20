@@ -182,7 +182,7 @@ export function ModelLimitsCell({ apiKey }: { apiKey: ApiKey }) {
   if (apiKey.smart_text) {
     return (
       <StatusBadge
-        label={t('Smart text')}
+        label={t('Smart API')}
         variant='info'
         copyable={false}
         className='-ml-1.5'

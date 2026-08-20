@@ -51,6 +51,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import {
   Sheet,
   SheetClose,
@@ -223,7 +224,8 @@ export function ApiKeysMutateDrawer({
           transformApiKeyToFormDefaults(
             apiKeyData.data,
             availableAutoGroupNames,
-            maxAutoGroups
+            maxAutoGroups,
+            globalAutoGroups
           )
         )
         setInitializedTarget(target)
@@ -250,6 +252,7 @@ export function ApiKeysMutateDrawer({
     apiKeyFetched,
     apiKeyFetching,
     availableAutoGroupNames,
+    globalAutoGroups,
     maxAutoGroups,
     initializedTarget,
   ])
@@ -420,11 +423,11 @@ export function ApiKeysMutateDrawer({
                   <FormItem className={sideDrawerSwitchItemClassName()}>
                     <div className='flex flex-col gap-0.5'>
                       <FormLabel className='text-sm'>
-                        {t('Smart text key')}
+                        {t('Smart API')}
                       </FormLabel>
                       <FormDescription className='text-xs'>
                         {t(
-                          'Use this key across all authorized text models. Codex, Claude, MCP, skills, and function tool calls are preserved; image, audio, and video endpoints are denied.'
+                          'Route intelligently based on your custom policy. Model and framework mismatches may affect output quality.'
                         )}
                       </FormDescription>
                     </div>
@@ -440,11 +443,14 @@ export function ApiKeysMutateDrawer({
                           form.setValue('auto_groups_mode', 'inherit', {
                             shouldDirty: true,
                           })
-                          form.setValue('auto_groups', [], {
+                          form.setValue('auto_groups', globalAutoGroups, {
                             shouldDirty: true,
-                            shouldValidate: false,
+                            shouldValidate: true,
                           })
                           form.setValue('cross_group_retry', true, {
+                            shouldDirty: true,
+                          })
+                          form.setValue('smart_route_policy', 'economy', {
                             shouldDirty: true,
                           })
                           form.setValue('model_limits', [], {
@@ -456,6 +462,129 @@ export function ApiKeysMutateDrawer({
                   </FormItem>
                 )}
               />
+
+              {smartText && (
+                <div className='border-border/60 bg-muted/20 space-y-4 rounded-lg border p-4'>
+                  <FormField
+                    control={form.control}
+                    name='auto_groups'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Routing groups')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Only administrator-approved groups are shown. Choose at least one group.'
+                          )}
+                        </FormDescription>
+                        <FormControl>
+                          <div className='space-y-2'>
+                            {globalAutoGroupOptions.map((option) => {
+                              const checked = field.value.includes(option.value)
+                              return (
+                                <div
+                                  key={option.value}
+                                  className='bg-background flex items-center justify-between gap-3 rounded-md border px-3 py-2.5'
+                                >
+                                  <div className='min-w-0'>
+                                    <div className='truncate text-sm font-medium'>
+                                      {option.label}
+                                    </div>
+                                    <div className='text-muted-foreground text-xs'>
+                                      {t('Multiplier: {{ratio}}x', {
+                                        ratio: option.ratio ?? 1,
+                                      })}
+                                    </div>
+                                  </div>
+                                  <Switch
+                                    aria-label={t(
+                                      'Use routing group {{group}}',
+                                      {
+                                        group: option.label,
+                                      }
+                                    )}
+                                    checked={checked}
+                                    onCheckedChange={(enabled) => {
+                                      const selected = new Set(field.value)
+                                      if (enabled) {
+                                        selected.add(option.value)
+                                      } else {
+                                        selected.delete(option.value)
+                                      }
+                                      form.setValue(
+                                        'auto_groups',
+                                        globalAutoGroups.filter((group) =>
+                                          selected.has(group)
+                                        ),
+                                        {
+                                          shouldDirty: true,
+                                          shouldValidate: true,
+                                        }
+                                      )
+                                    }}
+                                  />
+                                </div>
+                              )
+                            })}
+                            {globalAutoGroupOptions.length === 0 && (
+                              <div className='text-destructive text-sm'>
+                                {t(
+                                  'No Smart API groups are enabled by the administrator.'
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='smart_route_policy'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Routing strategy')}</FormLabel>
+                        <FormControl>
+                          <RadioGroup
+                            value={field.value}
+                            onValueChange={field.onChange}
+                            className='grid gap-2 sm:grid-cols-2'
+                          >
+                            <label className='bg-background flex cursor-pointer items-start gap-2 rounded-md border p-3'>
+                              <RadioGroupItem value='economy' />
+                              <span>
+                                <span className='block text-sm font-medium'>
+                                  {t('Economy first')}
+                                </span>
+                                <span className='text-muted-foreground block text-xs'>
+                                  {t(
+                                    'Use the administrator order from top to bottom.'
+                                  )}
+                                </span>
+                              </span>
+                            </label>
+                            <label className='bg-background flex cursor-pointer items-start gap-2 rounded-md border p-3'>
+                              <RadioGroupItem value='quality' />
+                              <span>
+                                <span className='block text-sm font-medium'>
+                                  {t('Quality first')}
+                                </span>
+                                <span className='text-muted-foreground block text-xs'>
+                                  {t(
+                                    'Use the reverse of the administrator order.'
+                                  )}
+                                </span>
+                              </span>
+                            </label>
+                          </RadioGroup>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              )}
 
               {!smartText && (
                 <FormField
