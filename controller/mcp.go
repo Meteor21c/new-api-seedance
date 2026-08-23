@@ -131,6 +131,15 @@ type mcpCreateMaterialUploadArgs struct {
 
 const mcpImageResultCacheTTL = 30 * time.Minute
 
+var mcpGPTImage2ProSizes = []string{
+	"auto",
+	"1024x1024",
+	"1024x1536",
+	"1536x1024",
+	"1024x1792",
+	"1792x1024",
+}
+
 var (
 	storeMCPGeneratedImage = service.StoreGeneratedImage
 	openMCPMaterialObject  = service.OpenMaterialObjectForUser
@@ -277,6 +286,19 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	}
 	args.ReferenceMaterialIDs = normalizeMCPMaterialIDs(args.ReferenceMaterialIDs)
 	normalizeMCPImageCompatibility(&args)
+	if validationError := validateMCPImageArguments(args); validationError != nil {
+		return mcpToolResult{
+			Content: []mcpContent{{Type: "text", Text: validationError.Error()}},
+			StructuredContent: map[string]any{
+				"status":          "INVALID_ARGUMENT",
+				"parameter":       "size",
+				"model":           args.Model,
+				"supported_sizes": mcpGPTImage2ProSizes,
+				"auto_behavior":   "omit size and let the upstream choose the output canvas; it does not preserve the reference image dimensions",
+			},
+			IsError: true,
+		}
+	}
 
 	requestHash := mcpImageRequestHash(c.GetInt("id"), args)
 	if !args.ForceNew {
@@ -678,6 +700,26 @@ func normalizeMCPImageCompatibility(args *mcpCreateImageArgs) {
 	}
 }
 
+func validateMCPImageArguments(args mcpCreateImageArgs) error {
+	if !strings.EqualFold(strings.TrimSpace(args.Model), "gpt-image-2-pro") {
+		return nil
+	}
+	size := strings.ToLower(strings.TrimSpace(args.Size))
+	if size == "" || size == "auto" {
+		return nil
+	}
+	for _, supportedSize := range mcpGPTImage2ProSizes[1:] {
+		if size == supportedSize {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		`size %q is not supported for gpt-image-2-pro. Use one of %s; use auto (or omit size) to let the upstream choose, and do not use the reference image's original dimensions as the output size.`,
+		args.Size,
+		strings.Join(mcpGPTImage2ProSizes, ", "),
+	)
+}
+
 func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
 	args.ForceNew = false
 	encoded, _ := common.Marshal(struct {
@@ -1012,7 +1054,7 @@ func mediaMCPTools() []mcpTool {
 						"minimum":     1,
 						"maximum":     4,
 					},
-					"size":    stringSchema("Optional provider-supported size, for example 1024x1024."),
+					"size":    stringSchema("For gpt-image-2-pro use auto, 1024x1024, 1024x1536, 1536x1024, 1024x1792, or 1792x1024. auto (or omission) lets the upstream choose the output canvas; it does not preserve reference-image dimensions."),
 					"quality": stringSchema("Optional provider-supported quality, for example standard, hd, low, medium, or high. gpt-image-2-pro is normalized to standard for upstream compatibility."),
 					"reference_material_ids": map[string]any{
 						"type":        "array",
@@ -1027,6 +1069,20 @@ func mediaMCPTools() []mcpTool {
 				},
 				"required":             []string{"model", "prompt"},
 				"additionalProperties": false,
+				"allOf": []map[string]any{
+					{
+						"if": map[string]any{
+							"properties": map[string]any{
+								"model": map[string]any{"const": "gpt-image-2-pro"},
+							},
+						},
+						"then": map[string]any{
+							"properties": map[string]any{
+								"size": map[string]any{"enum": mcpGPTImage2ProSizes},
+							},
+						},
+					},
+				},
 			},
 		},
 		{
@@ -1127,11 +1183,11 @@ func mcpServerNameForProfile(profile mcpToolProfile) string {
 func mcpInstructionsForProfile(profile mcpToolProfile) string {
 	switch profile {
 	case mcpToolProfileImage:
-		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID requested by the user and exposed by the user's New API drawing channels; never substitute or fall back to another image model after an error unless the user explicitly requests it. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids."
+		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID requested by the user and exposed by the user's New API drawing channels; never substitute or fall back to another image model after an error unless the user explicitly requests it. For gpt-image-2-pro, supported output sizes are auto, 1024x1024, 1024x1536, 1536x1024, 1024x1792, and 1792x1024; auto or omitted size lets the upstream choose the canvas and does not preserve reference-image dimensions. Do not send the reference image's original dimensions such as 800x800 as the output size. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids."
 	case mcpToolProfileVideo:
 		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	default:
-		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never regenerate because preview, display, download, decode, save, or export failed; use force_new only for an explicitly requested new variation. Use the exact model IDs requested by the user and exposed by the user's New API channels; never substitute or fall back to another image model after an error unless the user explicitly requests it. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
+		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never regenerate because preview, display, download, decode, save, or export failed; use force_new only for an explicitly requested new variation. Use the exact model IDs requested by the user and exposed by the user's New API channels; never substitute or fall back to another image model after an error unless the user explicitly requests it. For gpt-image-2-pro, supported output sizes are auto, 1024x1024, 1024x1536, 1536x1024, 1024x1792, and 1792x1024; auto or omitted size lets the upstream choose the canvas and does not preserve reference-image dimensions. Do not send the reference image's original dimensions such as 800x800 as the output size. Authenticate with a New API user token whose group can route to the requested media model; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass material IDs to create_image or create_video. Poll get_video until SUCCESS or FAILURE."
 	}
 }
 

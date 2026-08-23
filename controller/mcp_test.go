@@ -76,6 +76,8 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"create_image"`)
 	assert.Contains(t, recorder.Body.String(), `"create_material_upload"`)
 	assert.Contains(t, recorder.Body.String(), `never substitute or fall back to another model`)
+	assert.Contains(t, recorder.Body.String(), `1024x1792`)
+	assert.Contains(t, recorder.Body.String(), `reference-image dimensions`)
 }
 
 func TestMCPImageOnlyListsAndCallsImageTool(t *testing.T) {
@@ -377,6 +379,28 @@ func TestNormalizeMCPImageCompatibility(t *testing.T) {
 	regular := mcpCreateImageArgs{Model: "gpt-image-2", Quality: "high"}
 	normalizeMCPImageCompatibility(&regular)
 	assert.Equal(t, "high", regular.Quality)
+}
+
+func TestMCPCreateImageRejectsUnsupportedProSizeBeforeProvider(t *testing.T) {
+	originalHandler := mcpInternalHandler
+	t.Cleanup(func() { mcpInternalHandler = originalHandler })
+	providerCalls := 0
+	mcpInternalHandler = http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		providerCalls++
+		writer.WriteHeader(http.StatusInternalServerError)
+	})
+
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":"invalid-size","method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-pro","prompt":"probe","size":"800x800"}}}`,
+	)
+	MCPImage(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, 0, providerCalls)
+	assert.Contains(t, recorder.Body.String(), `"status":"INVALID_ARGUMENT"`)
+	assert.Contains(t, recorder.Body.String(), `800x800`)
+	assert.Contains(t, recorder.Body.String(), `1024x1024`)
+	assert.Contains(t, recorder.Body.String(), `auto`)
 }
 
 func TestMakeMCPImagePreviewBoundsLargePayload(t *testing.T) {
