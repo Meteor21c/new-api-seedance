@@ -60,6 +60,7 @@ func TestMCPInitialize(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), `"protocolVersion":"2025-06-18"`)
 	assert.Contains(t, recorder.Body.String(), `"name":"new-api-video"`)
+	assert.Contains(t, recorder.Body.String(), `never substitute or fall back to another image model`)
 }
 
 func TestMCPToolsList(t *testing.T) {
@@ -74,6 +75,7 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"get_video"`)
 	assert.Contains(t, recorder.Body.String(), `"create_image"`)
 	assert.Contains(t, recorder.Body.String(), `"create_material_upload"`)
+	assert.Contains(t, recorder.Body.String(), `never substitute or fall back to another model`)
 }
 
 func TestMCPImageOnlyListsAndCallsImageTool(t *testing.T) {
