@@ -301,8 +301,11 @@ func TestMCPCreateImageWithReferenceUsesImageEdit(t *testing.T) {
 		assert.Equal(t, http.MethodPost, request.Method)
 		assert.Equal(t, "/v1/images/edits", request.URL.Path)
 		require.NoError(t, request.ParseMultipartForm(1<<20))
-		assert.Equal(t, "gpt-image-2-plus", request.FormValue("model"))
+		// MCP submits only the public model alias. Normal New API channel
+		// selection and model_mapping resolve it to the upstream model later.
+		assert.Equal(t, "gpt-image-2-pro", request.FormValue("model"))
 		assert.Equal(t, "Keep the hamster's appearance", request.FormValue("prompt"))
+		assert.Equal(t, "standard", request.FormValue("quality"))
 		assert.Equal(t, "b64_json", request.FormValue("response_format"))
 		files := request.MultipartForm.File["image"]
 		require.Len(t, files, 1)
@@ -312,7 +315,7 @@ func TestMCPCreateImageWithReferenceUsesImageEdit(t *testing.T) {
 	})
 
 	context, recorder := newMCPTestContext(
-		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-plus","prompt":"Keep the hamster's appearance","reference_material_ids":["material-reference"]}}}`,
+		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2-pro","prompt":"Keep the hamster's appearance","quality":"high","reference_material_ids":["material-reference"]}}}`,
 	)
 	MCPImage(context)
 
@@ -360,8 +363,18 @@ func TestMCPCreateImageDeduplicatesRecentIdenticalRequest(t *testing.T) {
 }
 
 func TestMCPImageCacheKeysAreVersioned(t *testing.T) {
-	assert.Equal(t, "mcp:image:result:v5:request", mcpImageCacheKey("request"))
-	assert.Equal(t, "mcp:image:inflight:v5:request", mcpImageInflightKey("request"))
+	assert.Equal(t, "mcp:image:result:v6:request", mcpImageCacheKey("request"))
+	assert.Equal(t, "mcp:image:inflight:v6:request", mcpImageInflightKey("request"))
+}
+
+func TestNormalizeMCPImageCompatibility(t *testing.T) {
+	pro := mcpCreateImageArgs{Model: " GPT-IMAGE-2-PRO ", Quality: "high"}
+	normalizeMCPImageCompatibility(&pro)
+	assert.Equal(t, "standard", pro.Quality)
+
+	regular := mcpCreateImageArgs{Model: "gpt-image-2", Quality: "high"}
+	normalizeMCPImageCompatibility(&regular)
+	assert.Equal(t, "high", regular.Quality)
 }
 
 func TestMakeMCPImagePreviewBoundsLargePayload(t *testing.T) {

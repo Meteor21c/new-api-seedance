@@ -276,6 +276,7 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 		return newMCPToolError("reference_material_ids supports at most 3 images")
 	}
 	args.ReferenceMaterialIDs = normalizeMCPMaterialIDs(args.ReferenceMaterialIDs)
+	normalizeMCPImageCompatibility(&args)
 
 	requestHash := mcpImageRequestHash(c.GetInt("id"), args)
 	if !args.ForceNew {
@@ -664,6 +665,19 @@ func normalizeMCPMaterialIDs(materialIDs []string) []string {
 	return normalized
 }
 
+// gpt-image-2-pro is mapped to the site's Adobe image route, whose fixed-price
+// API accepts the standard quality label. Codex clients commonly infer high
+// from the "pro" suffix; normalize only this exact public alias so the request
+// is accepted without adding a provider retry or changing other image models.
+func normalizeMCPImageCompatibility(args *mcpCreateImageArgs) {
+	if args == nil {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(args.Model), "gpt-image-2-pro") {
+		args.Quality = "standard"
+	}
+}
+
 func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
 	args.ForceNew = false
 	encoded, _ := common.Marshal(struct {
@@ -675,13 +689,13 @@ func mcpImageRequestHash(userID int, args mcpCreateImageArgs) string {
 }
 
 func mcpImageCacheKey(requestHash string) string {
-	// v5 results use a direct 200 response for the bounded Markdown preview and
-	// keep the redirecting OSS URL only as the original-file fallback link.
-	return "mcp:image:result:v5:" + requestHash
+	// v6 also includes the normalized gpt-image-2-pro quality in the request
+	// hash, so earlier rejected parameter combinations cannot remain cached.
+	return "mcp:image:result:v6:" + requestHash
 }
 
 func mcpImageInflightKey(requestHash string) string {
-	return "mcp:image:inflight:v5:" + requestHash
+	return "mcp:image:inflight:v6:" + requestHash
 }
 
 func getCachedMCPImageResult(requestHash string) (mcpToolResult, bool) {
@@ -999,7 +1013,7 @@ func mediaMCPTools() []mcpTool {
 						"maximum":     4,
 					},
 					"size":    stringSchema("Optional provider-supported size, for example 1024x1024."),
-					"quality": stringSchema("Optional provider-supported quality, for example standard, hd, low, medium, or high."),
+					"quality": stringSchema("Optional provider-supported quality, for example standard, hd, low, medium, or high. gpt-image-2-pro is normalized to standard for upstream compatibility."),
 					"reference_material_ids": map[string]any{
 						"type":        "array",
 						"description": "Up to 3 temporary local reference-image IDs returned by create_material_upload. When provided, create_image uses the image-edit endpoint.",
