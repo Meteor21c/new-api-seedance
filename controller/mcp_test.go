@@ -78,6 +78,19 @@ func TestMCPToolsList(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `never substitute or fall back to another model`)
 	assert.Contains(t, recorder.Body.String(), `1024x1792`)
 	assert.Contains(t, recorder.Body.String(), `reference-image dimensions`)
+	assert.Contains(t, recorder.Body.String(), `"maxItems":4`)
+}
+
+func TestMCPCreateImageRejectsFifthReference(t *testing.T) {
+	context, recorder := newMCPTestContext(
+		`{"jsonrpc":"2.0","id":"limit","method":"tools/call","params":{"name":"create_image","arguments":{"model":"gpt-image-2","prompt":"A sunrise","reference_material_ids":["one","two","three","four","five"]}}}`,
+	)
+
+	MCPImage(context)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `reference_material_ids supports at most 4 images`)
+	assert.Contains(t, recorder.Body.String(), `"isError":true`)
 }
 
 func TestMCPImageOnlyListsAndCallsImageTool(t *testing.T) {

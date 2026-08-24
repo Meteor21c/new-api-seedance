@@ -16,8 +16,6 @@
     "Enter the exact model name configured in Channels": "Enter the exact model name configured in Channels",
     "Describe the image, composition, lighting, and style": "Describe the image, composition, lighting, and style",
     "Reference images (optional)": "Reference images (optional)",
-    "Upload up to 3 static JPG, PNG, or WEBP images, up to 10 MiB each": "Upload up to 3 static JPG, PNG, or WEBP images, up to 10 MiB each",
-    "Select no more than 3 reference images": "Select no more than 3 reference images",
     "Only JPG, PNG, and WEBP images are supported": "Only JPG, PNG, and WEBP images are supported",
     "Each reference image must not exceed 10 MiB": "Each reference image must not exceed 10 MiB",
     "Remove {{name}}": "Remove {{name}}",

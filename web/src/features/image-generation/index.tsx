@@ -91,7 +91,7 @@ const imageFormSchema = z.object({
 
 type ImageFormValues = z.infer<typeof imageFormSchema>
 
-const MAX_REFERENCE_IMAGES = 3
+const MAX_REFERENCE_IMAGES = 4
 const MAX_REFERENCE_IMAGE_SIZE = 10 * 1024 * 1024
 const REFERENCE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
@@ -695,7 +695,9 @@ export function ImageGeneration() {
                         const next = [...referenceImages, ...selected]
                         if (next.length > MAX_REFERENCE_IMAGES) {
                           toast.error(
-                            t('Select no more than 3 reference images')
+                            t('Select no more than {{count}} reference images', {
+                              count: MAX_REFERENCE_IMAGES,
+                            })
                           )
                           return
                         }
@@ -720,7 +722,8 @@ export function ImageGeneration() {
                     />
                     <p className='text-muted-foreground text-sm'>
                       {t(
-                        'Upload up to 3 static JPG, PNG, or WEBP images, up to 10 MiB each'
+                        'Upload up to {{count}} static JPG, PNG, or WEBP images, up to 10 MiB each.',
+                        { count: MAX_REFERENCE_IMAGES }
                       )}
                     </p>
                   </div>

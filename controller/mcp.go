@@ -31,9 +31,10 @@ import (
 )
 
 const (
-	mcpProtocolVersion = "2025-06-18"
-	mcpServerName      = "new-api-video"
-	mcpImageServerName = "new-api-image"
+	mcpProtocolVersion    = "2025-06-18"
+	mcpServerName         = "new-api-video"
+	mcpImageServerName    = "new-api-image"
+	maxMCPReferenceImages = 4
 )
 
 type mcpToolProfile string
@@ -281,8 +282,8 @@ func callCreateImageTool(c *gin.Context, arguments map[string]any) mcpToolResult
 	if args.N < 1 || args.N > 4 {
 		return newMCPToolError("n must be between 1 and 4")
 	}
-	if len(args.ReferenceMaterialIDs) > 3 {
-		return newMCPToolError("reference_material_ids supports at most 3 images")
+	if len(args.ReferenceMaterialIDs) > maxMCPReferenceImages {
+		return newMCPToolError(fmt.Sprintf("reference_material_ids supports at most %d images", maxMCPReferenceImages))
 	}
 	args.ReferenceMaterialIDs = normalizeMCPMaterialIDs(args.ReferenceMaterialIDs)
 	normalizeMCPImageCompatibility(&args)
@@ -1058,9 +1059,9 @@ func mediaMCPTools() []mcpTool {
 					"quality": stringSchema("Optional provider-supported quality, for example standard, hd, low, medium, or high. gpt-image-2-pro is normalized to standard for upstream compatibility."),
 					"reference_material_ids": map[string]any{
 						"type":        "array",
-						"description": "Up to 3 temporary local reference-image IDs returned by create_material_upload. When provided, create_image uses the image-edit endpoint.",
+						"description": fmt.Sprintf("Up to %d temporary local reference-image IDs returned by create_material_upload. When provided, create_image uses the image-edit endpoint.", maxMCPReferenceImages),
 						"items":       stringSchema("Temporary material ID."),
-						"maxItems":    3,
+						"maxItems":    maxMCPReferenceImages,
 					},
 					"force_new": map[string]any{
 						"type":        "boolean",
@@ -1087,7 +1088,7 @@ func mediaMCPTools() []mcpTool {
 		},
 		{
 			Name:        "create_material_upload",
-			Description: "Create a short-lived direct OSS upload for a local reference image. Upload the exact bytes with HTTP PUT to upload_url using every returned header, then pass material_id to create_image (up to 3 references) or create_video. The New API server does not proxy the upload bytes.",
+			Description: fmt.Sprintf("Create a short-lived direct OSS upload for a local reference image. Upload the exact bytes with HTTP PUT to upload_url using every returned header, then pass material_id to create_image (up to %d references) or create_video. The New API server does not proxy the upload bytes.", maxMCPReferenceImages),
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1183,7 +1184,7 @@ func mcpServerNameForProfile(profile mcpToolProfile) string {
 func mcpInstructionsForProfile(profile mcpToolProfile) string {
 	switch profile {
 	case mcpToolProfileImage:
-		return "IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID requested by the user and exposed by the user's New API drawing channels; never substitute or fall back to another image model after an error unless the user explicitly requests it. For gpt-image-2-pro, supported output sizes are auto, 1024x1024, 1024x1536, 1536x1024, 1024x1792, and 1792x1024; auto or omitted size lets the upstream choose the canvas and does not preserve reference-image dimensions. Do not send the reference image's original dimensions such as 800x800 as the output size. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to 3 returned material IDs as reference_material_ids."
+		return fmt.Sprintf("IMPORTANT: A SUCCESS from create_image is final and billable. Native image content blocks provide the immediate inline preview. The assistant's normal final response MUST also contain structuredContent.final_response_markdown verbatim, including its Markdown image and original-file fallback link; never leave the result only inside the MCP tool card. Never call create_image again because preview, display, download, decode, save, or export failed; reuse the existing result or report the delivery error. Set force_new only when the user explicitly requests a new variation. Use the exact image model ID requested by the user and exposed by the user's New API drawing channels; never substitute or fall back to another image model after an error unless the user explicitly requests it. For gpt-image-2-pro, supported output sizes are auto, 1024x1024, 1024x1536, 1536x1024, 1024x1792, and 1792x1024; auto or omitted size lets the upstream choose the canvas and does not preserve reference-image dimensions. Do not send the reference image's original dimensions such as 800x800 as the output size. Authenticate with a New API user token that can route to the drawing group; do not ask for OPENAI_API_KEY. For local reference images, call create_material_upload, PUT the exact bytes with every signed header, then pass up to %d returned material IDs as reference_material_ids.", maxMCPReferenceImages)
 	case mcpToolProfileVideo:
 		return "Use the exact video model IDs exposed by the user's New API video channels. Authenticate with a New API user token that can route to the video group. For a local reference image, call create_material_upload, upload the exact file bytes with HTTP PUT using every returned signed header, then pass the returned material_id to create_video. Poll get_video until SUCCESS or FAILURE."
 	default:
