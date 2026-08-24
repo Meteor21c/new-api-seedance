@@ -509,6 +509,15 @@ export function ChannelAffinitySection(props: Props) {
               >
                 Claude CLI
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  setEditingRule(null)
+                  setRuleTemplateKey('smartApiChatFallback')
+                  setRuleEditorOpen(true)
+                }}
+              >
+                {t('Smart API Chat fallback')}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button variant='outline' size='sm' onClick={handleFillTemplates}>

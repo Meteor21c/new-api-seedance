@@ -30,6 +30,7 @@ import {
   Radio,
   ServerCog,
   Settings,
+  SquareTerminal,
   Ticket,
   User,
   Users,
@@ -135,6 +136,11 @@ export function useSidebarData(): SidebarData {
             title: t('Channels'),
             url: '/channels',
             icon: Radio,
+          },
+          {
+            title: t('Channel Debugger'),
+            url: '/channel-debug',
+            icon: SquareTerminal,
           },
           {
             title: t('Models'),

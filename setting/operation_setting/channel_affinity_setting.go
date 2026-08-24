@@ -109,6 +109,27 @@ func buildCodexPassHeaderTemplate() map[string]interface{} {
 	}
 }
 
+// SmartAPIChatFallbackRule keeps Smart API/CC Switch requests sticky when the
+// client uses Chat Completions or omits a provider-specific cache key. The
+// runtime also supplies this rule for existing installations whose persisted
+// rule list predates it.
+func SmartAPIChatFallbackRule() ChannelAffinityRule {
+	return ChannelAffinityRule{
+		Name:       "smart api chat fallback",
+		ModelRegex: []string{"^gpt-.*$", "^claude-.*$"},
+		PathRegex:  []string{"/v1/(chat/completions|responses|messages)"},
+		KeySources: []ChannelAffinityKeySource{
+			{Type: "context_int", Key: "id"},
+		},
+		ValueRegex:         "",
+		TTLSeconds:         3600,
+		SkipRetryOnFailure: false,
+		IncludeUsingGroup:  true,
+		IncludeModelName:   true,
+		IncludeRuleName:    true,
+	}
+}
+
 var channelAffinitySetting = ChannelAffinitySetting{
 	Enabled:               true,
 	SwitchOnSuccess:       true,
@@ -146,6 +167,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			IncludeRuleName:       true,
 			UserAgentInclude:      nil,
 		},
+		SmartAPIChatFallbackRule(),
 	},
 }
 

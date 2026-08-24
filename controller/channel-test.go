@@ -37,9 +37,17 @@ import (
 )
 
 type testResult struct {
-	context     *gin.Context
-	localErr    error
-	newAPIError *types.NewAPIError
+	context         *gin.Context
+	localErr        error
+	newAPIError     *types.NewAPIError
+	responseBody    []byte
+	usage           *dto.Usage
+	info            *relaycommon.RelayInfo
+	priceData       hosttypes.PriceData
+	quota           int
+	tieredResult    *billingexpr.TieredResult
+	totalTimeMs     int64
+	firstResponseMs int64
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) string {
@@ -71,6 +79,10 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+	return testChannelWithRequest(ctx, channel, testUserID, testModel, endpointType, isStream, nil)
+}
+
+func testChannelWithRequest(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, requestOverride dto.Request) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -228,7 +240,10 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 
-	request := buildTestRequest(testModel, endpointType, channel, isStream)
+	request := requestOverride
+	if request == nil {
+		request = buildTestRequest(testModel, endpointType, channel, isStream)
+	}
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 
@@ -241,6 +256,13 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	info.IsChannelTest = true
+	if requestOverride != nil {
+		// The administrator debugger intentionally permits upstream-discovered
+		// models that are not yet enabled or priced for site users. They still
+		// run through the selected channel, but an unset price is reported as
+		// zero instead of blocking the diagnostic request.
+		info.UserSetting.AcceptUnsetRatioModel = true
+	}
 	info.InitChannelMeta(c)
 
 	err = attachTestBillingRequestInput(info, request)
@@ -474,7 +496,12 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, isStream)
+	var respBody []byte
+	if requestOverride != nil {
+		respBody, err = readTestResponseBodyWithLimit(result.Body, isStream, 1<<20)
+	} else {
+		respBody, err = readTestResponseBody(result.Body, isStream)
+	}
 	if err != nil {
 		return testResult{
 			context:     c,
@@ -494,6 +521,10 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	quota, tieredResult := settleTestQuota(info, priceData, usage)
 	tok := time.Now()
 	milliseconds := tok.Sub(tik).Milliseconds()
+	firstResponseMs := milliseconds
+	if info.HasSendResponse() {
+		firstResponseMs = info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
+	}
 	consumedTime := float64(milliseconds) / 1000.0
 	other := buildTestLogOther(c, info, priceData, usage, tieredResult)
 	model.RecordConsumeLog(c, testUserID, model.RecordConsumeLogParams{
@@ -509,11 +540,19 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		Group:            info.UsingGroup,
 		Other:            other,
 	})
-	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
+	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, common.LocalLogPreview(string(respBody))))
 	return testResult{
-		context:     c,
-		localErr:    nil,
-		newAPIError: nil,
+		context:         c,
+		localErr:        nil,
+		newAPIError:     nil,
+		responseBody:    respBody,
+		usage:           usage,
+		info:            info,
+		priceData:       priceData,
+		quota:           quota,
+		tieredResult:    tieredResult,
+		totalTimeMs:     milliseconds,
+		firstResponseMs: firstResponseMs,
 	}
 }
 
@@ -589,10 +628,13 @@ func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dt
 }
 
 func readTestResponseBody(body io.ReadCloser, isStream bool) ([]byte, error) {
+	return readTestResponseBodyWithLimit(body, isStream, 8<<10)
+}
+
+func readTestResponseBodyWithLimit(body io.ReadCloser, isStream bool, maxStreamBytes int64) ([]byte, error) {
 	defer func() { _ = body.Close() }()
-	const maxStreamLogBytes = 8 << 10
 	if isStream {
-		return io.ReadAll(io.LimitReader(body, maxStreamLogBytes))
+		return io.ReadAll(io.LimitReader(body, maxStreamBytes))
 	}
 	return io.ReadAll(body)
 }
