@@ -695,9 +695,12 @@ export function ImageGeneration() {
                         const next = [...referenceImages, ...selected]
                         if (next.length > MAX_REFERENCE_IMAGES) {
                           toast.error(
-                            t('Select no more than {{count}} reference images', {
-                              count: MAX_REFERENCE_IMAGES,
-                            })
+                            t(
+                              'Select no more than {{count}} reference images',
+                              {
+                                count: MAX_REFERENCE_IMAGES,
+                              }
+                            )
                           )
                           return
                         }
