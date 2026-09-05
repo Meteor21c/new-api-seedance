@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,12 +10,159 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNormalizeOpenAIImageContentBody(t *testing.T) {
+	payload := []byte(`{"kind":"upstream","url":"data:image/png;base64,aGVsbG8="}`)
+	token := base64.RawURLEncoding.EncodeToString(payload) + ".signature"
+	wrappedURL := "https://multimodal.example/v1/images/content/" + token
+	body := `{"created":1710000000,"data":[{"url":"` + wrappedURL + `","revised_prompt":"draw a cat"}],"usage":{"total_tokens":7}}`
+
+	normalized := normalizeOpenAIImageContentBody([]byte(body))
+	var response struct {
+		Data  []map[string]string `json:"data"`
+		Usage map[string]int      `json:"usage"`
+	}
+	require.NoError(t, common.Unmarshal(normalized, &response))
+	require.Len(t, response.Data, 1)
+	require.Equal(t, "aGVsbG8=", response.Data[0]["b64_json"])
+	require.NotContains(t, response.Data[0], "url")
+	require.Equal(t, 7, response.Usage["total_tokens"])
+
+	ordinary := []byte(`{"data":[{"url":"https://cdn.example/image.png"}]}`)
+	require.Equal(t, string(ordinary), string(normalizeOpenAIImageContentBody(ordinary)))
+}
+
+func TestInlineOpenAIImageURLs(t *testing.T) {
+	originalFetch := fetchPublicGeneratedImage
+	t.Cleanup(func() { fetchPublicGeneratedImage = originalFetch })
+
+	fetchPublicGeneratedImage = func(ctx context.Context, rawURL string, maxBytes int64) (string, error) {
+		require.Equal(t, "https://cdn.example/generated.png", rawURL)
+		require.Equal(t, maxGeneratedImageFetchBytes, maxBytes)
+		return base64.StdEncoding.EncodeToString([]byte("image bytes")), nil
+	}
+
+	body := []byte(`{"created":1710000000,"data":[{"url":"https://cdn.example/generated.png","revised_prompt":"cat"}],"usage":{"total_tokens":7}}`)
+	normalized, err := inlineOpenAIImageURLs(context.Background(), body)
+	require.NoError(t, err)
+
+	var response struct {
+		Data []map[string]string `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(normalized, &response))
+	require.Len(t, response.Data, 1)
+	require.Equal(t, base64.StdEncoding.EncodeToString([]byte("image bytes")), response.Data[0]["b64_json"])
+	require.NotContains(t, response.Data[0], "url")
+	require.Equal(t, "cat", response.Data[0]["revised_prompt"])
+}
+
+func TestInlineOpenAIImageURLsSkipsExistingBase64(t *testing.T) {
+	originalFetch := fetchPublicGeneratedImage
+	t.Cleanup(func() { fetchPublicGeneratedImage = originalFetch })
+	fetchPublicGeneratedImage = func(context.Context, string, int64) (string, error) {
+		t.Fatal("fetch must not run when b64_json is already present")
+		return "", nil
+	}
+
+	body := []byte(`{"data":[{"url":"https://cdn.example/generated.png","b64_json":"aW1hZ2U="}]}`)
+	normalized, err := inlineOpenAIImageURLs(context.Background(), body)
+	require.NoError(t, err)
+	require.Equal(t, string(body), string(normalized))
+}
+
+func TestNormalizeOpenAIImageResponseEnvelope(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "nested result data with base64 alias",
+			body: `{"created":1,"result":{"data":[{"base64":"aW1hZ2U="}]}}`,
+			want: `"data":[{"b64_json":"aW1hZ2U="}]`,
+		},
+		{
+			name: "top-level images with URL alias",
+			body: `{"images":[{"image_url":"https://cdn.example/image.png"}]}`,
+			want: `"data":[{"url":"https://cdn.example/image.png"}]`,
+		},
+		{
+			name: "nested image_url object",
+			body: `{"output":{"images":[{"image_url":{"url":"https://cdn.example/image.png"}}]}}`,
+			want: `"data":[{"url":"https://cdn.example/image.png"}]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized := normalizeOpenAIImageResponseEnvelope([]byte(test.body))
+			require.Contains(t, string(normalized), test.want)
+			require.NotContains(t, string(normalized), `"result":`)
+			require.NotContains(t, string(normalized), `"output":`)
+			require.NotContains(t, string(normalized), `"images":`)
+		})
+	}
+}
+
+func TestOpenaiImageHandlerRejectsErrorWithoutType(t *testing.T) {
+	body := `{"error":{"message":"provider rejected the image"}}`
+	c, recorder, resp, info := newImageTestContext(t, body, "application/json", false)
+
+	usage, err := OpenaiImageHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	require.Equal(t, "provider rejected the image", err.ToOpenAIError().Message)
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestOpenaiImageHandlerRejectsEmptySuccessShape(t *testing.T) {
+	body := `{"created":1710000000,"status":"completed"}`
+	c, recorder, resp, info := newImageTestContext(t, body, "application/json", false)
+	info.Request = &dto.ImageRequest{ResponseFormat: "b64_json"}
+
+	usage, err := OpenaiImageHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadGateway, err.StatusCode)
+	require.Contains(t, err.Error(), "supported image payload")
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestImageRequestWantsBase64(t *testing.T) {
+	require.False(t, imageRequestWantsBase64(nil))
+	require.False(t, imageRequestWantsBase64(&relaycommon.RelayInfo{Request: &dto.ImageRequest{ResponseFormat: "url"}}))
+	require.True(t, imageRequestWantsBase64(&relaycommon.RelayInfo{Request: &dto.ImageRequest{ResponseFormat: " B64_JSON "}}))
+}
+
+func TestOpenaiImageHandlerPreservesRequestedBase64Response(t *testing.T) {
+	originalFetch := fetchPublicGeneratedImage
+	t.Cleanup(func() { fetchPublicGeneratedImage = originalFetch })
+	fetchPublicGeneratedImage = func(context.Context, string, int64) (string, error) {
+		return base64.StdEncoding.EncodeToString([]byte("preserved image")), nil
+	}
+
+	c, recorder, resp, info := newImageTestContext(
+		t,
+		`{"created":1710000000,"data":[{"url":"https://cdn.example/temporary.png"}]}`,
+		"application/json",
+		false,
+	)
+	info.Request = &dto.ImageRequest{ResponseFormat: "b64_json"}
+
+	usage, relayErr := OpenaiImageHandler(c, info, resp)
+	require.Nil(t, relayErr)
+	require.NotNil(t, usage)
+	require.Contains(t, recorder.Body.String(), `"b64_json":"cHJlc2VydmVkIGltYWdl"`)
+	require.NotContains(t, recorder.Body.String(), `"url"`)
+}
 
 func newImageTestContext(t *testing.T, body, contentType string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
@@ -321,10 +469,11 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 	longImage := strings.Repeat("a", 4096)
 
 	tests := []struct {
-		name      string
-		body      string
-		usePrice  bool
-		wantCount float64
+		name        string
+		body        string
+		usePrice    bool
+		wantCount   float64
+		wantFailure bool
 	}{
 		{
 			name:      "fixed price uses data length",
@@ -333,10 +482,11 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 			wantCount: 2,
 		},
 		{
-			name:      "empty data keeps requested count",
-			body:      `{"data":[]}`,
-			usePrice:  true,
-			wantCount: 3,
+			name:        "empty data is not a billable success",
+			body:        `{"data":[]}`,
+			usePrice:    true,
+			wantCount:   3,
+			wantFailure: true,
 		},
 		{
 			name:      "ratio billing ignores data length",
@@ -354,9 +504,15 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 
 			_, err := OpenaiImageHandler(c, info, resp)
 
-			require.Nil(t, err)
+			if tt.wantFailure {
+				require.NotNil(t, err)
+				require.Equal(t, http.StatusBadGateway, err.StatusCode)
+				require.Empty(t, recorder.Body.String())
+			} else {
+				require.Nil(t, err)
+				require.Equal(t, tt.body, recorder.Body.String())
+			}
 			require.Equal(t, tt.wantCount, info.PriceData.OtherRatios()["n"])
-			require.Equal(t, tt.body, recorder.Body.String())
 		})
 	}
 }
@@ -377,7 +533,7 @@ func TestOpenaiImageHandlersReturnJSONError(t *testing.T) {
 		usage, err := OpenaiImageHandler(c, info, resp)
 		require.Nil(t, usage)
 		require.NotNil(t, err)
-		require.Equal(t, http.StatusOK, err.StatusCode)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		oaiError := err.ToOpenAIError()
 		require.Equal(t, "content moderation failed", oaiError.Message)
 		require.Equal(t, "upstream_error", oaiError.Type)
@@ -391,7 +547,7 @@ func TestOpenaiImageHandlersReturnJSONError(t *testing.T) {
 		usage, err := OpenaiImageStreamHandler(c, info, resp)
 		require.Nil(t, usage)
 		require.NotNil(t, err)
-		require.Equal(t, http.StatusOK, err.StatusCode)
+		require.Equal(t, http.StatusBadGateway, err.StatusCode)
 		require.Equal(t, "content moderation failed", err.ToOpenAIError().Message)
 		require.Empty(t, recorder.Body.String())
 	})

@@ -48,6 +48,11 @@ token.expired: "该令牌已过期"
 token.exhausted: "该令牌额度已用尽 TokenStatusExhausted[sk-{{.Prefix}}***{{.Suffix}}]"
 token.status_unavailable: "该令牌状态不可用"
 token.db_error: "无效的令牌，数据库查询出错，请联系管理员"
+token.auto_groups_too_many: "每个令牌最多可选择 {{.Max}} 个 Auto 分组"
+token.auto_groups_duplicate: "Auto 分组 {{.Group}} 重复"
+token.auto_groups_invalid: "Auto 分组 {{.Group}} 不可用或无权访问"
+token.smart_text_endpoint_forbidden: "该智能 API Key 不支持当前请求接口"
+token.smart_groups_required: "请至少选择一个参与智能 API 路由的分组"
 
 # Redemption messages
 redemption.name_length: "兑换码名称长度必须在1-20之间"
@@ -281,3 +286,9 @@ custom_oauth.name_empty: "提供商名称不能为空"
 custom_oauth.has_bindings: "无法删除已有用户绑定的提供商"
 custom_oauth.binding_not_found: "OAuth 绑定不存在"
 custom_oauth.provider_id_field_invalid: "无法从提供商响应中提取用户 ID"
+
+# Generation concurrency messages
+generation.already_in_progress: "已有一个同类生成请求正在处理，请等待其结束后再提交。"
+generation.video_already_in_progress: "该用户已有一个视频任务正在处理，请等待其成功或失败后再提交新视频。"
+generation.concurrency_check_failed: "无法检查正在处理的生成请求，请稍后重试。"
+channel.user_concurrency_limit: "此渠道每个用户最多同时运行 {{.Limit}} 个对话请求，请等待正在运行的请求结束。"

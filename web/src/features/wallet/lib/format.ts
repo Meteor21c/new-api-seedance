@@ -16,8 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { DEFAULT_DISCOUNT_RATE } from '../constants'
-
 // ============================================================================
 // Wallet-specific Formatting Functions
 // ============================================================================
@@ -62,12 +60,19 @@ export function formatCurrency(amount: number | string): string {
 }
 
 /**
- * Get discount label for display (e.g., "20% OFF")
+ * Get a human-readable label for a price multiplier.
+ * Rates above 1 represent a surcharge, while rates below 1 are discounts.
  */
 export function getDiscountLabel(discount: number): string {
-  if (discount >= DEFAULT_DISCOUNT_RATE) {
+  if (!Number.isFinite(discount) || discount <= 0 || discount === 1) {
     return ''
   }
+
+  if (discount > 1) {
+    const fee = Math.round((discount - 1) * 100)
+    return `+${fee}% FEE`
+  }
+
   const off = Math.round((1 - discount) * 100)
   return `${off}% OFF`
 }
@@ -85,6 +90,7 @@ export function calculatePresetPricing(
   const actualPrice = originalPrice * discount
   const savedAmount = originalPrice - actualPrice
   const hasDiscount = discount < 1.0
+  const hasSurcharge = discount > 1.0
   const displayValue = presetValue * usdExchangeRate
 
   return {
@@ -93,5 +99,7 @@ export function calculatePresetPricing(
     actualPrice,
     savedAmount,
     hasDiscount,
+    hasSurcharge,
+    hasAdjustment: hasDiscount || hasSurcharge,
   }
 }

@@ -114,6 +114,18 @@ export const RULE_TEMPLATES: Record<string, RuleTemplate> = {
     include_model_name: false,
     include_rule_name: true,
   },
+  smartApiChatFallback: {
+    name: 'smart api chat fallback',
+    model_regex: ['^gpt-.*$', '^claude-.*$'],
+    path_regex: ['/v1/(chat/completions|responses|messages)'],
+    key_sources: [{ type: 'context_int', key: 'id' }],
+    value_regex: '',
+    ttl_seconds: 3600,
+    skip_retry_on_failure: false,
+    include_using_group: true,
+    include_model_name: true,
+    include_rule_name: true,
+  },
 }
 
 export function makeUniqueName(

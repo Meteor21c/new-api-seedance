@@ -30,6 +30,13 @@ type AbilityWithChannel struct {
 	ChannelType int `json:"channel_type"`
 }
 
+type EnabledChannelModel struct {
+	Model        string `json:"model"`
+	ModelMapping string `json:"model_mapping"`
+	ChannelType  int    `json:"channel_type"`
+	Priority     int64  `json:"priority"`
+}
+
 func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 	var abilities []AbilityWithChannel
 	err := DB.Table("abilities").
@@ -38,6 +45,64 @@ func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
 		Where("abilities.enabled = ?", true).
 		Scan(&abilities).Error
 	return abilities, err
+}
+
+func getEnabledChannelModelsForGroups(groups []string, channelType *int) ([]EnabledChannelModel, error) {
+	if len(groups) == 0 {
+		return []EnabledChannelModel{}, nil
+	}
+
+	query := DB.Table("abilities").
+		Select(
+			"abilities.model, COALESCE(channels.model_mapping, '') AS model_mapping, "+
+				"channels.type AS channel_type, COALESCE(abilities.priority, 0) AS priority",
+		).
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled).
+		Where("abilities."+commonGroupCol+" IN ?", groups)
+	if channelType != nil {
+		query = query.Where("channels.type = ?", *channelType)
+	}
+
+	var bindings []EnabledChannelModel
+	err := query.
+		Order("abilities.priority DESC").
+		Order("abilities.model ASC").
+		Scan(&bindings).Error
+	return bindings, err
+}
+
+func GetEnabledChannelModelsForGroups(groups []string) ([]EnabledChannelModel, error) {
+	return getEnabledChannelModelsForGroups(groups, nil)
+}
+
+func GetEnabledChannelModelsForGroupsByType(groups []string, channelType int) ([]EnabledChannelModel, error) {
+	return getEnabledChannelModelsForGroups(groups, &channelType)
+}
+
+// HasEnabledChannelForGroupModel reports whether a user-authorized group has
+// at least one enabled channel for the requested model. Generation playgrounds
+// can expose models from several usable groups; this check lets the relay pick
+// the group that actually owns the model instead of assuming the user's
+// primary group does.
+func HasEnabledChannelForGroupModel(group string, modelName string, channelType *int) bool {
+	group = strings.TrimSpace(group)
+	modelName = strings.TrimSpace(modelName)
+	if group == "" || modelName == "" {
+		return false
+	}
+
+	query := DB.Table("abilities").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+commonGroupCol+" = ?", group).
+		Where("abilities.model = ?", modelName).
+		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled)
+	if channelType != nil {
+		query = query.Where("channels.type = ?", *channelType)
+	}
+
+	var count int64
+	return query.Limit(1).Count(&count).Error == nil && count > 0
 }
 
 func GetGroupEnabledModels(group string) []string {
@@ -60,12 +125,24 @@ func GetAllEnableAbilities() []Ability {
 	return abilities
 }
 
-func getPriority(group string, model string, retry int) (int, error) {
+func excludedChannelIDList(excludedChannelIDs map[int]struct{}) []int {
+	excluded := make([]int, 0, len(excludedChannelIDs))
+	for channelID := range excludedChannelIDs {
+		excluded = append(excluded, channelID)
+	}
+	return excluded
+}
+
+func getPriorityExcluding(group string, model string, retry int, excludedChannelIDs map[int]struct{}) (int, error) {
 
 	var priorities []int
-	err := DB.Model(&Ability{}).
+	query := DB.Model(&Ability{}).
 		Select("DISTINCT(priority)").
-		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
+		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	if len(excludedChannelIDs) > 0 {
+		query = query.Not("channel_id IN ?", excludedChannelIDList(excludedChannelIDs))
+	}
+	err := query.
 		Order("priority DESC").              // 按优先级降序排序
 		Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
 
@@ -90,15 +167,24 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
+func getChannelQueryExcluding(group string, model string, retry int, excludedChannelIDs map[int]struct{}) (*gorm.DB, error) {
 	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	if len(excludedChannelIDs) > 0 {
+		excluded := excludedChannelIDList(excludedChannelIDs)
+		maxPrioritySubQuery = maxPrioritySubQuery.Not("channel_id IN ?", excluded)
+		channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery).
+			Not("channel_id IN ?", excluded)
+	}
 	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
+		priority, err := getPriorityExcluding(group, model, retry, excludedChannelIDs)
 		if err != nil {
 			return nil, err
 		} else {
 			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+			if len(excludedChannelIDs) > 0 {
+				channelQuery = channelQuery.Not("channel_id IN ?", excludedChannelIDList(excludedChannelIDs))
+			}
 		}
 	}
 
@@ -106,10 +192,14 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 }
 
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetChannelExcluding(group, model, retry, requestPath, nil)
+}
+
+func GetChannelExcluding(group string, model string, retry int, requestPath string, excludedChannelIDs map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
+	channelQuery, err := getChannelQueryExcluding(group, model, retry, excludedChannelIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +212,15 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	if len(excludedChannelIDs) > 0 {
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, excluded := excludedChannelIDs[ability.ChannelId]; !excluded {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one

@@ -22,13 +22,16 @@ import { z } from 'zod'
 import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 
 import { DEFAULT_GROUP } from '../constants'
-import { type ApiKeyFormData, type ApiKey } from '../types'
+import type { ApiKey, ApiKeyFormData } from '../types'
 
 // ============================================================================
 // Form Schema
 // ============================================================================
 
-export function getApiKeyFormSchema(t: TFunction) {
+export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
+  const autoGroupLimit =
+    Number.isInteger(maxAutoGroups) && maxAutoGroups > 0 ? maxAutoGroups : 5
+
   return z
     .object({
       name: z.string().min(1, t('Please enter a name')),
@@ -38,10 +41,55 @@ export function getApiKeyFormSchema(t: TFunction) {
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       group: z.string().optional(),
+      auto_groups_mode: z.enum(['inherit', 'custom']),
+      auto_groups: z.array(z.string()),
       cross_group_retry: z.boolean().optional(),
+      smart_text: z.boolean(),
+      smart_route_policy: z.enum(['economy', 'quality']),
       tokenCount: z.number().min(1).optional(),
     })
     .superRefine((data, ctx) => {
+      if (data.smart_text && data.auto_groups.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['auto_groups'],
+          message: t('Select at least one group for Smart API routing'),
+        })
+      }
+
+      if (!data.smart_text && data.group === 'auto') {
+        if (
+          data.auto_groups_mode === 'custom' &&
+          data.auto_groups.length === 0
+        ) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['auto_groups'],
+            message: t(
+              'Select at least one Auto group or restore global Auto.'
+            ),
+          })
+        }
+
+        if (data.auto_groups.length > autoGroupLimit) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['auto_groups'],
+            message: t('Select at most {{max}} Auto groups', {
+              max: autoGroupLimit,
+            }),
+          })
+        }
+
+        if (new Set(data.auto_groups).size !== data.auto_groups.length) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['auto_groups'],
+            message: t('Auto groups must not contain duplicates'),
+          })
+        }
+      }
+
       if (data.unlimited_quota) {
         return
       }
@@ -73,7 +121,11 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   model_limits: [],
   allow_ips: '',
   group: DEFAULT_GROUP,
+  auto_groups_mode: 'inherit',
+  auto_groups: [],
   cross_group_retry: true,
+  smart_text: false,
+  smart_route_policy: 'economy',
   tokenCount: 1,
 }
 
@@ -83,6 +135,8 @@ export function getApiKeyFormDefaultValues(
   return {
     ...API_KEY_FORM_DEFAULT_VALUES,
     group: defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP,
+    auto_groups_mode: 'inherit',
+    auto_groups: [],
     cross_group_retry: defaultUseAutoGroup,
   }
 }
@@ -97,6 +151,19 @@ export function getApiKeyFormDefaultValues(
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
+  const smartText = data.smart_text
+  let crossGroupRetry = false
+  if (smartText) {
+    crossGroupRetry = true
+  } else if (data.group === 'auto') {
+    crossGroupRetry = !!data.cross_group_retry
+  }
+  let autoGroups: string[] = []
+  if (smartText) {
+    autoGroups = data.auto_groups
+  } else if (data.group === 'auto' && data.auto_groups_mode === 'custom') {
+    autoGroups = data.auto_groups
+  }
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -106,11 +173,14 @@ export function transformFormDataToPayload(
       ? Math.floor(data.expired_time.getTime() / 1000)
       : -1,
     unlimited_quota: data.unlimited_quota,
-    model_limits_enabled: data.model_limits.length > 0,
-    model_limits: data.model_limits.join(','),
+    model_limits_enabled: smartText ? false : data.model_limits.length > 0,
+    model_limits: smartText ? '' : data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
-    group: data.group || '',
-    cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
+    group: smartText ? 'auto' : data.group || '',
+    auto_groups: autoGroups,
+    cross_group_retry: crossGroupRetry,
+    smart_text: smartText,
+    smart_route_policy: data.smart_route_policy,
   }
 }
 
@@ -118,8 +188,25 @@ export function transformFormDataToPayload(
  * Transform API key data to form defaults
  */
 export function transformApiKeyToFormDefaults(
-  apiKey: ApiKey
+  apiKey: ApiKey,
+  availableAutoGroups: string[] = [],
+  maxAutoGroups = 5,
+  smartAllowedGroups: string[] = availableAutoGroups
 ): ApiKeyFormValues {
+  const availableSet = new Set(availableAutoGroups)
+  const storedAutoGroups = apiKey.auto_groups ?? []
+  let autoGroups = storedAutoGroups
+    .filter((group) => availableSet.has(group))
+    .slice(0, Math.max(0, maxAutoGroups))
+  if (apiKey.smart_text) {
+    const storedSet = new Set(storedAutoGroups)
+    autoGroups =
+      storedSet.size > 0
+        ? smartAllowedGroups.filter((group) => storedSet.has(group))
+        : [...smartAllowedGroups]
+  }
+  const autoGroupsMode = storedAutoGroups.length > 0 ? 'custom' : 'inherit'
+
   return {
     name: apiKey.name,
     remain_quota_dollars: apiKey.unlimited_quota
@@ -135,7 +222,11 @@ export function transformApiKeyToFormDefaults(
       : [],
     allow_ips: apiKey.allow_ips || '',
     group: apiKey.group || DEFAULT_GROUP,
+    auto_groups_mode: autoGroupsMode,
+    auto_groups: autoGroups,
     cross_group_retry: !!apiKey.cross_group_retry,
+    smart_text: apiKey.smart_text,
+    smart_route_policy: apiKey.smart_route_policy,
     tokenCount: 1,
   }
 }

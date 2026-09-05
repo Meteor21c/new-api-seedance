@@ -1115,7 +1115,7 @@ export function PaymentSettingsSection({
                               name={field.name}
                               onBlur={field.onBlur}
                               textareaRef={field.ref}
-                              placeholder='{"100":0.95,"200":0.9}'
+                              placeholder='{"10":1.01,"50":1,"100":0.98,"500":0.9}'
                               heightClassName='h-40 min-h-40 max-h-40'
                               aria-invalid={Boolean(
                                 form.formState.errors.AmountDiscount
@@ -1124,7 +1124,9 @@ export function PaymentSettingsSection({
                           )}
                         </FormControl>
                         <FormDescription>
-                          {t('Discount map by recharge amount (JSON object)')}
+                          {t(
+                            'Tier multipliers by minimum recharge amount (JSON object)'
+                          )}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>

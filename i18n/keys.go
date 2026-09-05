@@ -28,6 +28,14 @@ const (
 	MsgBatchTooMany      = "common.batch_too_many"
 )
 
+// Generation concurrency messages
+const (
+	MsgGenerateAlreadyInProgress      = "generation.already_in_progress"
+	MsgGenerateVideoAlreadyInProgress = "generation.video_already_in_progress"
+	MsgGenerateConcurrencyCheckFailed = "generation.concurrency_check_failed"
+	MsgChannelUserConcurrencyLimit    = "channel.user_concurrency_limit"
+)
+
 // Auth middleware messages
 const (
 	MsgAuthNotLoggedIn           = "auth.not_logged_in"
@@ -42,19 +50,24 @@ const (
 
 // Token related messages
 const (
-	MsgTokenNameTooLong          = "token.name_too_long"
-	MsgTokenQuotaNegative        = "token.quota_negative"
-	MsgTokenQuotaExceedMax       = "token.quota_exceed_max"
-	MsgTokenGenerateFailed       = "token.generate_failed"
-	MsgTokenGetInfoFailed        = "token.get_info_failed"
-	MsgTokenExpiredCannotEnable  = "token.expired_cannot_enable"
-	MsgTokenExhaustedCannotEable = "token.exhausted_cannot_enable"
-	MsgTokenInvalid              = "token.invalid"
-	MsgTokenNotProvided          = "token.not_provided"
-	MsgTokenExpired              = "token.expired"
-	MsgTokenExhausted            = "token.exhausted"
-	MsgTokenStatusUnavailable    = "token.status_unavailable"
-	MsgTokenDbError              = "token.db_error"
+	MsgTokenNameTooLong                = "token.name_too_long"
+	MsgTokenQuotaNegative              = "token.quota_negative"
+	MsgTokenQuotaExceedMax             = "token.quota_exceed_max"
+	MsgTokenGenerateFailed             = "token.generate_failed"
+	MsgTokenGetInfoFailed              = "token.get_info_failed"
+	MsgTokenExpiredCannotEnable        = "token.expired_cannot_enable"
+	MsgTokenExhaustedCannotEable       = "token.exhausted_cannot_enable"
+	MsgTokenInvalid                    = "token.invalid"
+	MsgTokenNotProvided                = "token.not_provided"
+	MsgTokenExpired                    = "token.expired"
+	MsgTokenExhausted                  = "token.exhausted"
+	MsgTokenStatusUnavailable          = "token.status_unavailable"
+	MsgTokenDbError                    = "token.db_error"
+	MsgTokenAutoGroupsTooMany          = "token.auto_groups_too_many"
+	MsgTokenAutoGroupsDuplicate        = "token.auto_groups_duplicate"
+	MsgTokenAutoGroupsInvalid          = "token.auto_groups_invalid"
+	MsgTokenSmartTextEndpointForbidden = "token.smart_text_endpoint_forbidden"
+	MsgTokenSmartGroupsRequired        = "token.smart_groups_required"
 )
 
 // Redemption related messages

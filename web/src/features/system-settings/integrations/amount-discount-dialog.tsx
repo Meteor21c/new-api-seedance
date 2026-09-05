@@ -44,7 +44,7 @@ const createAmountDiscountDialogSchema = (t: (key: string) => string) =>
     discountRate: z
       .number()
       .positive(t('Discount rate must be greater than 0'))
-      .max(1, t('Discount rate must be ≤ 1')),
+      .max(10, t('Discount rate must be ≤ 10')),
   })
 
 type AmountDiscountDialogFormValues = z.infer<
@@ -85,10 +85,13 @@ export function AmountDiscountDialog({
 
   const discountRate = form.watch('discountRate')
 
-  const discountPercentage = useMemo(() => {
-    if (!discountRate || discountRate >= 1) return 0
-    return Math.round((1 - discountRate) * 100)
-  }, [discountRate])
+  const adjustmentLabel = useMemo(() => {
+    if (!discountRate || discountRate === 1) return ''
+    if (discountRate > 1) {
+      return `+${Math.round((discountRate - 1) * 100)}% ${t('fee')}`
+    }
+    return `${Math.round((1 - discountRate) * 100)}% ${t('off')}`
+  }, [discountRate, t])
 
   useEffect(() => {
     if (editData) {
@@ -116,7 +119,7 @@ export function AmountDiscountDialog({
       onOpenChange={onOpenChange}
       title={isEditMode ? t('Edit discount tier') : t('Add discount tier')}
       description={t(
-        'Set a discount rate for a specific recharge amount threshold.'
+        'Set a price multiplier for a minimum recharge amount threshold.'
       )}
       contentClassName='sm:max-w-[500px]'
       contentHeight='auto'
@@ -156,7 +159,7 @@ export function AmountDiscountDialog({
                     placeholder={t('e.g., 100')}
                     {...field}
                     onChange={(e) =>
-                      field.onChange(parseInt(e.target.value) || 0)
+                      field.onChange(Number.parseInt(e.target.value) || 0)
                     }
                     disabled={isEditMode}
                   />
@@ -178,29 +181,35 @@ export function AmountDiscountDialog({
             name='discountRate'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Discount Rate')}</FormLabel>
+                <FormLabel>{t('Price Multiplier')}</FormLabel>
                 <FormControl>
                   <Input
                     type='number'
                     step='0.01'
                     min='0.01'
-                    max='1'
-                    placeholder={t('e.g., 0.95')}
+                    max='10'
+                    placeholder={t('e.g., 1.01 or 0.98')}
                     {...field}
                     onChange={(e) =>
-                      field.onChange(parseFloat(e.target.value) || 0)
+                      field.onChange(Number.parseFloat(e.target.value) || 0)
                     }
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('Final price multiplier (0.95 = 5% discount')}
-                  {discountPercentage > 0 && (
-                    <span className='ml-1 font-medium text-green-600 dark:text-green-400'>
-                      = {discountPercentage}
-                      {t('% off')}
+                  {t(
+                    'Final price multiplier (1.01 = 1% fee, 0.98 = 2% discount)'
+                  )}
+                  {adjustmentLabel && (
+                    <span
+                      className={`ml-1 font-medium ${
+                        discountRate < 1
+                          ? 'text-green-600 dark:text-green-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }`}
+                    >
+                      = {adjustmentLabel}
                     </span>
                   )}
-                  )
                 </FormDescription>
                 <FormMessage />
               </FormItem>

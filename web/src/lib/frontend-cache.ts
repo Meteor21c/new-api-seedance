@@ -54,5 +54,7 @@ function clearLocalUiCache(): void {
     }
   }
 
-  keysToRemove.forEach((key) => window.localStorage.removeItem(key))
+  keysToRemove
+    .filter((key) => !key.startsWith('newapi:generation:'))
+    .forEach((key) => window.localStorage.removeItem(key))
 }

@@ -41,6 +41,35 @@ func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
 	}
 }
 
+func TestChannelValidateSettingsRejectsInvalidUserConcurrencyLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		limit   int
+		wantErr bool
+	}{
+		{name: "zero keeps the channel unlimited", limit: 0},
+		{name: "one limits each user to one session", limit: 1},
+		{name: "maximum accepted", limit: dto.MaxChannelUserConcurrency},
+		{name: "negative rejected", limit: -1, wantErr: true},
+		{name: "above maximum rejected", limit: dto.MaxChannelUserConcurrency + 1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := &Channel{}
+			channel.SetOtherSettings(dto.ChannelOtherSettings{UserConcurrencyLimit: tt.limit})
+
+			err := channel.ValidateSettings()
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "user_concurrency_limit")
+		})
+	}
+}
+
 func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(t *testing.T) {
 	inferenceRoute := dto.AdvancedCustomRoute{
 		IncomingPath: "/v1/chat/completions",

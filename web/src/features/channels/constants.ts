@@ -81,12 +81,13 @@ export const CHANNEL_TYPES = {
   58: 'Advanced Custom',
   59: 'Sub2API',
   60: 'New API',
+  61: 'FZYinghe Video',
 } as const
 
 const CHANNEL_TYPE_DISPLAY_ORDER: number[] = [
   1, 14, 33, 24, 43, 3, 41, 48, 60, 58, 42, 34, 20, 4, 40, 27, 25, 17, 26, 15,
   46, 23, 18, 45, 31, 35, 49, 19, 47, 37, 38, 39, 11, 8, 57, 59, 22, 21, 44, 2,
-  5, 36, 50, 51, 52, 53, 54, 55, 56,
+  5, 36, 50, 51, 52, 53, 54, 55, 56, 61,
 ]
 
 export const CHANNEL_TYPE_OPTIONS: { value: number; label: string }[] = (() => {
@@ -250,6 +251,8 @@ export const ERROR_MESSAGES = {
     'HTTP/2 connection shards must be between 1 and 8',
   INVALID_HTTP1_WITH_SHARDS:
     'HTTP/2 connection shards must be 1 when HTTP/1.1 is selected',
+  INVALID_USER_CONCURRENCY_LIMIT:
+    'Per-user concurrency limit must be between 0 and 1000',
   CREATE_FAILED: 'Failed to create channel',
   UPDATE_FAILED: 'Failed to update channel',
   DELETE_FAILED: 'Failed to delete channel',
@@ -372,6 +375,8 @@ export const FIELD_DESCRIPTIONS = {
   WEIGHT: 'Used for load balancing. Higher weight = more requests',
   TEST_MODEL: 'Model to use when testing channel connectivity',
   AUTO_BAN: 'Automatically disable channel on repeated failures',
+  USER_CONCURRENCY_LIMIT:
+    'Maximum simultaneous conversation requests per user on this channel. 0 means unlimited. Images, videos, embeddings, reranking, and background tasks are not affected.',
   STATUS_CODE_MAPPING: 'Map response status codes (JSON format)',
   TAG: 'Group channels by tag for batch operations',
   REMARK: 'Internal notes (not shown to users)',
@@ -390,6 +395,30 @@ export const FIELD_DESCRIPTIONS = {
 export const MODEL_FETCHABLE_TYPES = new Set([
   1, 4, 14, 17, 20, 23, 24, 25, 26, 27, 31, 34, 35, 40, 42, 43, 47, 48, 57, 58,
   59, 60,
+])
+
+export const FIELD_PASSTHROUGH_TYPES = new Set([
+  1,
+  14,
+  57,
+  58,
+  59,
+  CHANNEL_TYPE_NEW_API,
+])
+
+export const OPENAI_FIELD_PASSTHROUGH_TYPES = new Set([
+  1,
+  57,
+  58,
+  59,
+  CHANNEL_TYPE_NEW_API,
+])
+
+export const CLAUDE_FIELD_PASSTHROUGH_TYPES = new Set([
+  14,
+  58,
+  59,
+  CHANNEL_TYPE_NEW_API,
 ])
 
 export const TYPE_TO_KEY_PROMPT: Record<number, string> = {

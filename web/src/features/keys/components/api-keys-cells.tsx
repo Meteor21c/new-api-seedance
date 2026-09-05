@@ -179,6 +179,17 @@ export function UnlimitedQuotaBadge(props: UnlimitedQuotaBadgeProps) {
 export function ModelLimitsCell({ apiKey }: { apiKey: ApiKey }) {
   const { t } = useTranslation()
 
+  if (apiKey.smart_text) {
+    return (
+      <StatusBadge
+        label={t('Smart API')}
+        variant='info'
+        copyable={false}
+        className='-ml-1.5'
+      />
+    )
+  }
+
   if (!apiKey.model_limits_enabled || !apiKey.model_limits) {
     return (
       <StatusBadge

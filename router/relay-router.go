@@ -25,7 +25,7 @@ func SetRelayRouter(router *gin.Engine) {
 			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
 				controller.ListModels(c, constant.ChannelTypeAnthropic)
 			case c.GetHeader("x-goog-api-key") != "" || c.Query("key") != "": // 单独的适配
-				controller.RetrieveModel(c, constant.ChannelTypeGemini)
+				controller.ListModels(c, constant.ChannelTypeGemini)
 			default:
 				controller.ListModels(c, constant.ChannelTypeOpenAI)
 			}
@@ -66,6 +66,28 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		playgroundRouter.POST("/chat/completions", controller.Playground)
 	}
+
+	imagePlaygroundRouter := router.Group("/pg")
+	imagePlaygroundRouter.Use(middleware.RouteTag("relay"))
+	imagePlaygroundRouter.Use(middleware.SystemPerformanceCheck())
+	imagePlaygroundRouter.Use(
+		middleware.UserAuth(),
+		middleware.SidebarModuleAuth("chat", "image"),
+	)
+	{
+		imagePlaygroundRouter.POST(
+			"/images/generations",
+			middleware.GenerationConcurrency("image"),
+			middleware.Distribute(),
+			controller.PlaygroundImage,
+		)
+		imagePlaygroundRouter.POST(
+			"/images/edits",
+			middleware.GenerationConcurrency("image"),
+			middleware.Distribute(),
+			controller.PlaygroundImage,
+		)
+	}
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RouteTag("relay"))
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
@@ -77,6 +99,19 @@ func SetRelayRouter(router *gin.Engine) {
 		wsRouter.Use(middleware.Distribute())
 		wsRouter.GET("/realtime", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIRealtime)
+		})
+	}
+	{
+		// Image generation uses a per-user lock before channel distribution so
+		// dashboard, API, and MCP clients share the same concurrency rule.
+		relayV1Router.POST("/edits", middleware.GenerationConcurrency("image"), middleware.Distribute(), func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatOpenAIImage)
+		})
+		relayV1Router.POST("/images/generations", middleware.GenerationConcurrency("image"), middleware.Distribute(), func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatOpenAIImage)
+		})
+		relayV1Router.POST("/images/edits", middleware.GenerationConcurrency("image"), middleware.Distribute(), func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})
 	}
 	{
@@ -104,21 +139,9 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.POST("/responses/compact", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction)
 		})
-
 		// alpha search related routes (Codex standalone web search)
 		httpRouter.POST("/alpha/search", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIAlphaSearch)
-		})
-
-		// image related routes
-		httpRouter.POST("/edits", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
-		httpRouter.POST("/images/generations", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
-		httpRouter.POST("/images/edits", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})
 
 		// embedding related routes

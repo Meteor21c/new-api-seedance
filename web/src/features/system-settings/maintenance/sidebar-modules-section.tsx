@@ -96,6 +96,14 @@ export function SidebarModulesSection({
         title: t('Chat'),
         description: t('Access previous conversations and start new ones.'),
       },
+      image: {
+        title: t('Image Generation'),
+        description: t('Generate images with configured image models'),
+      },
+      video: {
+        title: t('Video Generation'),
+        description: t('Create asynchronous videos and track task status'),
+      },
     },
     console: {
       detail: {
@@ -133,6 +141,10 @@ export function SidebarModulesSection({
       channel: {
         title: t('Channels'),
         description: t('Configure upstream providers and routing.'),
+      },
+      channel_debug: {
+        title: t('Channel Debugger'),
+        description: t('Test upstream channel models with live metrics.'),
       },
       models: {
         title: t('Models'),

@@ -58,6 +58,8 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     enabled: true,
     playground: true,
     chat: true,
+    image: true,
+    video: true,
   },
   console: {
     enabled: true,
@@ -75,6 +77,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
   admin: {
     enabled: true,
     channel: true,
+    channel_debug: true,
     models: true,
     redemption: true,
     user: true,

@@ -460,8 +460,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		key = privateData.Key
 	}
 	resp, err := adaptor.FetchTask(baseURL, key, map[string]any{
-		"task_id": task.GetUpstreamTaskID(),
-		"action":  task.Action,
+		"task_id":     task.GetUpstreamTaskID(),
+		"action":      task.Action,
+		"api_version": task.Properties.ProviderAPIVersion,
 	}, proxy)
 	if err != nil {
 		return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)
@@ -539,7 +540,15 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		if task.FinishTime == 0 {
 			task.FinishTime = now
 		}
-		if strings.HasPrefix(taskResult.Url, "data:") {
+		if (ch.Type == constant.ChannelTypeFZYingheVideo || ch.Type == constant.ChannelTypeXai) && taskResult.Url != "" &&
+			taskResult.Url != taskcommon.BuildProxyURL(task.TaskID) &&
+			!strings.HasPrefix(taskResult.Url, "data:") {
+			// FZYinghe and xAI return short-lived provider links. Expose our stable,
+			// authenticated proxy URL to clients and retain the upstream URL
+			// only for the server-side fetch.
+			task.PrivateData.UpstreamResultURL = taskResult.Url
+			task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
+		} else if strings.HasPrefix(taskResult.Url, "data:") {
 			// data: URI (e.g. Vertex base64 encoded video) — keep in Data, not in ResultURL
 			task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 		} else if taskResult.Url != "" {
@@ -571,6 +580,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	shouldCleanupMaterials := false
 	if isDone && snap.Status != task.Status {
 		won, err := task.UpdateWithStatus(snap.Status)
 		if err != nil {
@@ -581,6 +591,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 			logger.LogWarn(ctx, fmt.Sprintf("Task %s CAS lost or no-op update, skip billing", task.TaskID))
 			shouldRefund = false
 			shouldSettle = false
+		} else {
+			shouldCleanupMaterials = true
 		}
 	} else if !snap.Equal(task.Snapshot()) {
 		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
@@ -596,6 +608,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 	if shouldRefund {
 		RefundTaskQuota(ctx, task, task.FailReason)
+	}
+	if shouldCleanupMaterials {
+		ScheduleMaterialCleanup(task.PrivateData.MaterialKeys)
 	}
 
 	return nil

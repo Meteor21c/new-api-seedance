@@ -79,9 +79,15 @@ func (t *Task) GetData(v any) error {
 }
 
 type Properties struct {
-	Input             string `json:"input"`
-	UpstreamModelName string `json:"upstream_model_name,omitempty"`
-	OriginModelName   string `json:"origin_model_name,omitempty"`
+	Input              string `json:"input"`
+	UpstreamModelName  string `json:"upstream_model_name,omitempty"`
+	OriginModelName    string `json:"origin_model_name,omitempty"`
+	ProviderAPIVersion string `json:"provider_api_version,omitempty"`
+	Resolution         string `json:"resolution,omitempty"`
+	Duration           int    `json:"duration,omitempty"`
+	AspectRatio        string `json:"aspect_ratio,omitempty"`
+	Mode               string `json:"mode,omitempty"`
+	Audio              *bool  `json:"audio,omitempty"`
 }
 
 func (m *Properties) Scan(val interface{}) error {
@@ -104,12 +110,18 @@ type TaskPrivateData struct {
 	Key            string `json:"key,omitempty"`
 	UpstreamTaskID string `json:"upstream_task_id,omitempty"` // 上游真实 task ID
 	ResultURL      string `json:"result_url,omitempty"`       // 任务成功后的结果 URL（视频地址等）
+	// UpstreamResultURL stores the provider URL separately when ResultURL is a
+	// same-origin proxy URL. Keeping the two values apart prevents the proxy
+	// handler from recursively fetching itself and avoids exposing short-lived
+	// provider links to clients.
+	UpstreamResultURL string `json:"upstream_result_url,omitempty"`
 	// 计费上下文：用于异步退款/差额结算（轮询阶段读取）
 	BillingSource  string              `json:"billing_source,omitempty"`  // "wallet" 或 "subscription"
 	SubscriptionId int                 `json:"subscription_id,omitempty"` // 订阅 ID，用于订阅退款
 	TokenId        int                 `json:"token_id,omitempty"`        // 令牌 ID，用于令牌额度退款
 	NodeName       string              `json:"node_name,omitempty"`       // 发起任务的节点名，轮询结算阶段据此归属日志而非最后查询节点
 	BillingContext *TaskBillingContext `json:"billing_context,omitempty"` // 计费参数快照（用于轮询阶段重新计算）
+	MaterialKeys   []string            `json:"material_keys,omitempty"`   // 临时 OSS 素材对象，任务结束后异步清理
 }
 
 // TaskBillingContext 记录任务提交时的计费参数，以便轮询阶段可以重新计算额度。
@@ -131,9 +143,14 @@ func (t *Task) GetUpstreamTaskID() string {
 	return t.TaskID
 }
 
-// GetResultURL 获取任务结果 URL（视频地址等）
-// 新数据存在 PrivateData.ResultURL 中；旧数据回退到 FailReason（历史兼容）
+// GetResultURL 获取任务结果 URL（视频地址等）。
+// 新数据存在 PrivateData.ResultURL 中；只有成功的旧任务才允许回退到
+// FailReason，因为旧版本曾将成功 URL 存在该字段。失败任务的 FailReason
+// 是错误信息，绝不能作为可播放地址返回给客户端。
 func (t *Task) GetResultURL() string {
+	if t.Status != TaskStatusSuccess {
+		return ""
+	}
 	if t.PrivateData.ResultURL != "" {
 		return t.PrivateData.ResultURL
 	}
@@ -155,7 +172,16 @@ func (p *TaskPrivateData) Scan(val interface{}) error {
 }
 
 func (p TaskPrivateData) Value() (driver.Value, error) {
-	if (p == TaskPrivateData{}) {
+	if p.Key == "" &&
+		p.UpstreamTaskID == "" &&
+		p.ResultURL == "" &&
+		p.UpstreamResultURL == "" &&
+		p.BillingSource == "" &&
+		p.SubscriptionId == 0 &&
+		p.TokenId == 0 &&
+		p.NodeName == "" &&
+		p.BillingContext == nil &&
+		len(p.MaterialKeys) == 0 {
 		return nil, nil
 	}
 	return common.Marshal(p)
@@ -187,6 +213,9 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		}
 		if relayInfo.OriginModelName != "" {
 			properties.OriginModelName = relayInfo.OriginModelName
+		}
+		if relayInfo.TaskAPIVersion != "" {
+			properties.ProviderAPIVersion = relayInfo.TaskAPIVersion
 		}
 	}
 
@@ -319,6 +348,28 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 	return tasks
 }
 
+// HasActiveVideoTaskForUser reports whether the user already has a video task
+// that has not reached a terminal state. Suno and Midjourney use the same task
+// table but are different generation categories, so they are excluded.
+// Very old unfinished rows are ignored as a final safeguard against a stale
+// upstream task blocking the user forever; the normal timeout worker marks
+// such rows as failed much earlier.
+func HasActiveVideoTaskForUser(userID int, cutoffUnix int64) (bool, error) {
+	if userID <= 0 {
+		return false, nil
+	}
+	var id int64
+	err := DB.Model(&Task{}).
+		Where("user_id = ?", userID).
+		Where("platform NOT IN ?", []string{string(constant.TaskPlatformSuno), string(constant.TaskPlatformMidjourney)}).
+		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+		Where("submit_time >= ?", cutoffUnix).
+		Order("id DESC").
+		Limit(1).
+		Pluck("id", &id).Error
+	return id != 0, err
+}
+
 // HasUnfinishedSyncTasks reports whether at least one async (Suno/video) task is
 // still in progress. It is a cheap existence check (LIMIT 1) used to decide
 // whether the async_task_poll system task needs to run; when no task is pending
@@ -370,13 +421,14 @@ func (Task *Task) Insert() error {
 }
 
 type taskSnapshot struct {
-	Status     TaskStatus
-	Progress   string
-	StartTime  int64
-	FinishTime int64
-	FailReason string
-	ResultURL  string
-	Data       json.RawMessage
+	Status            TaskStatus
+	Progress          string
+	StartTime         int64
+	FinishTime        int64
+	FailReason        string
+	ResultURL         string
+	UpstreamResultURL string
+	Data              json.RawMessage
 }
 
 func (s taskSnapshot) Equal(other taskSnapshot) bool {
@@ -386,18 +438,20 @@ func (s taskSnapshot) Equal(other taskSnapshot) bool {
 		s.FinishTime == other.FinishTime &&
 		s.FailReason == other.FailReason &&
 		s.ResultURL == other.ResultURL &&
+		s.UpstreamResultURL == other.UpstreamResultURL &&
 		bytes.Equal(s.Data, other.Data)
 }
 
 func (t *Task) Snapshot() taskSnapshot {
 	return taskSnapshot{
-		Status:     t.Status,
-		Progress:   t.Progress,
-		StartTime:  t.StartTime,
-		FinishTime: t.FinishTime,
-		FailReason: t.FailReason,
-		ResultURL:  t.PrivateData.ResultURL,
-		Data:       t.Data,
+		Status:            t.Status,
+		Progress:          t.Progress,
+		StartTime:         t.StartTime,
+		FinishTime:        t.FinishTime,
+		FailReason:        t.FailReason,
+		ResultURL:         t.PrivateData.ResultURL,
+		UpstreamResultURL: t.PrivateData.UpstreamResultURL,
+		Data:              t.Data,
 	}
 }
 

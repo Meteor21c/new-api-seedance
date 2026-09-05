@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,82 @@ import (
 type ModelRequest struct {
 	Model string `json:"model"`
 	Group string `json:"group,omitempty"`
+}
+
+// resolveGenerationGroup keeps normal API token group semantics intact while
+// allowing dashboard/MCP generation requests to use a model stored in another
+// group the user is explicitly allowed to access. Previously generation model
+// discovery searched all usable groups but distribution only searched the
+// current group, so a model could be listed successfully and then fail with
+// "no available channel" unless the channel was duplicated in default.
+func resolveGenerationGroup(c *gin.Context, modelName, usingGroup string) string {
+	if !isGenerationSubmitRequest(c) || usingGroup == "auto" {
+		return usingGroup
+	}
+
+	// An API token with an explicit group is a deliberate routing choice. Do
+	// not silently change its group (and therefore its pricing/routing policy).
+	if tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup); tokenGroup != "" {
+		return usingGroup
+	}
+
+	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	if userGroup == "" {
+		userGroup = usingGroup
+	}
+	usableGroups := service.GetUserUsableGroups(userGroup)
+	orderedGroups := make([]string, 0, len(usableGroups)+1)
+	if usingGroup != "" {
+		orderedGroups = append(orderedGroups, usingGroup)
+	}
+	for group := range usableGroups {
+		if group != usingGroup {
+			orderedGroups = append(orderedGroups, group)
+		}
+	}
+	sortStart := 0
+	if usingGroup != "" {
+		sortStart = 1
+	}
+	sort.Strings(orderedGroups[sortStart:])
+
+	var channelType *int
+	if isVideoGenerationSubmit(c) {
+		videoType := constant.ChannelTypeFZYingheVideo
+		if common.IsXAIVideoGenerationModel(modelName) {
+			videoType = constant.ChannelTypeXai
+		}
+		channelType = &videoType
+	}
+	for _, group := range orderedGroups {
+		if model.HasEnabledChannelForGroupModel(group, modelName, channelType) {
+			return group
+		}
+	}
+	return usingGroup
+}
+
+func isGenerationSubmitRequest(c *gin.Context) bool {
+	return c.Request.Method == http.MethodPost &&
+		(isImageGenerationSubmit(c) || isVideoGenerationSubmit(c))
+}
+
+func isImageGenerationSubmit(c *gin.Context) bool {
+	path := c.Request.URL.Path
+	return strings.HasPrefix(path, "/pg/images/generations") ||
+		strings.HasPrefix(path, "/pg/images/edits") ||
+		strings.HasPrefix(path, "/v1/images/generations") ||
+		strings.HasPrefix(path, "/v1/images/edits") ||
+		strings.HasPrefix(path, "/v1/edits")
+}
+
+func isVideoGenerationSubmit(c *gin.Context) bool {
+	path := c.Request.URL.Path
+	return strings.HasPrefix(path, "/pg/video/generations") ||
+		strings.HasPrefix(path, "/v1/video/generations") ||
+		strings.HasPrefix(path, "/v1/videos") ||
+		strings.HasPrefix(path, "/kling/v1/videos") ||
+		strings.HasPrefix(path, "/jimeng")
 }
 
 func Distribute() func(c *gin.Context) {
@@ -84,6 +161,25 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+				if isGenerationSubmitRequest(c) && strings.TrimSpace(modelRequest.Group) != "" {
+					requestedGroup := strings.TrimSpace(modelRequest.Group)
+					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+					if !service.GroupInUserUsableGroups(userGroup, requestedGroup) {
+						abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+						return
+					}
+					if tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup); tokenGroup != "" && tokenGroup != requestedGroup {
+						abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+						return
+					}
+					usingGroup = requestedGroup
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
+				}
+				resolvedGroup := resolveGenerationGroup(c, modelRequest.Model, usingGroup)
+				if resolvedGroup != usingGroup {
+					usingGroup = resolvedGroup
+					common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
+				}
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}
@@ -109,7 +205,7 @@ func Distribute() func(c *gin.Context) {
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-							autoGroups := service.GetUserAutoGroup(userGroup)
+							autoGroups := service.GetRequestAutoGroups(c, userGroup)
 							for _, g := range autoGroups {
 								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
 									selectGroup = g
@@ -319,7 +415,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = getTaskOriginModelName(c)
 		}
 		c.Set("relay_mode", relayMode)
-	} else if strings.Contains(c.Request.URL.Path, "/v1/video/generations") {
+	} else if strings.Contains(c.Request.URL.Path, "/video/generations") {
 		relayMode := relayconstant.RelayModeUnknown
 		if c.Request.Method == http.MethodPost {
 			req, err := getModelFromRequest(c)
@@ -367,7 +463,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
 		modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "dall-e")
-	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") {
+	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") || strings.HasPrefix(c.Request.URL.Path, "/pg/images/edits") {
 		//modelRequest.Model = common.GetStringIfEmpty(c.PostForm("model"), "gpt-image-1")
 		contentType := c.ContentType()
 		if slices.Contains([]string{gin.MIMEPOSTForm, gin.MIMEMultipartPOSTForm}, contentType) {
@@ -410,9 +506,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		common.SetContextKey(c, constant.ContextKeyTokenGroup, modelRequest.Group)
 	}
 
-	if strings.HasPrefix(c.Request.URL.Path, "/v1/responses/compact") && modelRequest.Model != "" {
-		modelRequest.Model = ratio_setting.WithCompactModelSuffix(modelRequest.Model)
-	}
 	return &modelRequest, shouldSelectChannel, nil
 }
 

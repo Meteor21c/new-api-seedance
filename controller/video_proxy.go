@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -82,7 +83,11 @@ func VideoProxy(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "", nil)
+	proxyMethod := http.MethodGet
+	if c.Request.Method == http.MethodHead {
+		proxyMethod = http.MethodHead
+	}
+	req, err := http.NewRequestWithContext(ctx, proxyMethod, "", nil)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to create request: %s", err.Error()))
 		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to create proxy request")
@@ -115,8 +120,13 @@ func VideoProxy(c *gin.Context) {
 		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
 	default:
-		// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)
-		videoURL = task.GetResultURL()
+		// FZYinghe links are short-lived. New tasks expose a stable same-origin
+		// proxy URL in ResultURL and keep the provider link separately for this
+		// server-side fetch. Fall back to ResultURL for legacy tasks/providers.
+		videoURL = task.PrivateData.UpstreamResultURL
+		if videoURL == "" {
+			videoURL = task.GetResultURL()
+		}
 	}
 
 	videoURL = strings.TrimSpace(videoURL)
@@ -153,6 +163,11 @@ func VideoProxy(c *gin.Context) {
 		videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to create proxy request")
 		return
 	}
+	for _, header := range []string{"Range", "If-Range"} {
+		if value := c.GetHeader(header); value != "" {
+			req.Header.Set(header, value)
+		}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -162,7 +177,7 @@ func VideoProxy(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Upstream returned status %d for %s", resp.StatusCode, videoURL))
 		videoProxyError(c, http.StatusBadGateway, "server_error",
 			fmt.Sprintf("Upstream service returned status %d", resp.StatusCode))
@@ -170,15 +185,50 @@ func VideoProxy(c *gin.Context) {
 	}
 
 	for key, values := range resp.Header {
+		if isHopByHopVideoHeader(key) {
+			continue
+		}
 		for _, value := range values {
 			c.Writer.Header().Add(key, value)
 		}
 	}
 
-	c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
+	c.Writer.Header().Set("Cache-Control", "private, max-age=3600")
+	c.Writer.Header().Set("Accept-Ranges", "bytes")
 	c.Writer.WriteHeader(resp.StatusCode)
+	if proxyMethod == http.MethodHead {
+		return
+	}
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
+	}
+}
+
+// SignedVideoProxy lets API and MCP clients open a completed video without
+// placing their reusable New API key in the URL. The signed token supplies the
+// task owner's identity; VideoProxy still performs the ownership lookup and
+// all upstream/SSRF checks.
+func SignedVideoProxy(c *gin.Context) {
+	taskID := c.Param("task_id")
+	userID, err := service.VerifyVideoContentAccessToken(
+		taskID,
+		c.Param("access_token"),
+		time.Now(),
+	)
+	if err != nil {
+		videoProxyError(c, http.StatusUnauthorized, "invalid_request_error", err.Error())
+		return
+	}
+	c.Set("id", userID)
+	VideoProxy(c)
+}
+
+func isHopByHopVideoHeader(header string) bool {
+	switch http.CanonicalHeaderKey(header) {
+	case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -209,8 +259,7 @@ func writeVideoDataURL(c *gin.Context, dataURL string) error {
 	}
 
 	c.Writer.Header().Set("Content-Type", mimeType)
-	c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
-	c.Writer.WriteHeader(http.StatusOK)
-	_, err = c.Writer.Write(videoBytes)
-	return err
+	c.Writer.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeContent(c.Writer, c.Request, "video", time.Time{}, bytes.NewReader(videoBytes))
+	return nil
 }

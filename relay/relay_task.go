@@ -177,9 +177,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.PublicTaskID = model.GenerateTaskID()
 	}
 
-	// 4. 价格计算：基础模型价格
-	info.OriginModelName = modelName
+	// 4. 价格计算：基础模型价格。盈合渠道允许展示自定义别名；
+	// 当别名没有单独计费配置时，自动继承映射后模型的默认价格。
+	pricingModelName := modelName
+	if info.ChannelType == constant.ChannelTypeFZYingheVideo &&
+		info.IsModelMapped &&
+		!helper.HasModelBillingConfig(modelName) &&
+		helper.HasModelBillingConfig(info.UpstreamModelName) {
+		pricingModelName = info.UpstreamModelName
+	}
+	info.OriginModelName = pricingModelName
 	priceData, err := helper.ModelPriceHelperPerCall(c, info)
+	info.OriginModelName = modelName
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest)
 	}
@@ -221,7 +230,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
+	if resp != nil && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
@@ -406,7 +415,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 				taskResp = service.TaskErrorWrapper(err, "convert_to_openai_video_failed", http.StatusInternalServerError)
 				return
 			}
-			respBody = openAIVideoData
+			respBody = replaceOpenAIVideoResultURL(openAIVideoData, originTask)
 			return
 		}
 		taskResp = service.TaskErrorWrapperLocal(fmt.Errorf("not_implemented:%s", originTask.Platform), "not_implemented", http.StatusNotImplemented)
@@ -416,12 +425,52 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	// 通用 TaskDto 格式
 	respBody, err = common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
-		Data: TaskModel2Dto(originTask),
+		Data: videoTaskModel2Dto(originTask),
 	})
 	if err != nil {
 		taskResp = service.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 	}
 	return
+}
+
+// videoTaskModel2Dto makes a completed video result portable to browsers,
+// media players, Codex, and Claude. The URL contains a task-bound short-lived
+// signature instead of a reusable New API key.
+func videoTaskModel2Dto(task *model.Task) *dto.TaskDto {
+	result := TaskModel2Dto(task)
+	if task.Status != model.TaskStatusSuccess {
+		return result
+	}
+	signedURL, err := service.BuildSignedVideoContentURL(task.TaskID, task.UserId)
+	if err == nil {
+		result.ResultURL = signedURL
+	}
+	return result
+}
+
+func replaceOpenAIVideoResultURL(raw []byte, task *model.Task) []byte {
+	if task.Status != model.TaskStatusSuccess {
+		return raw
+	}
+	signedURL, err := service.BuildSignedVideoContentURL(task.TaskID, task.UserId)
+	if err != nil {
+		return raw
+	}
+	var response map[string]any
+	if err = common.Unmarshal(raw, &response); err != nil {
+		return raw
+	}
+	metadata, _ := response["metadata"].(map[string]any)
+	if metadata == nil {
+		metadata = make(map[string]any)
+		response["metadata"] = metadata
+	}
+	metadata["url"] = signedURL
+	rewritten, err := common.Marshal(response)
+	if err != nil {
+		return raw
+	}
+	return rewritten
 }
 
 // tryRealtimeFetch 尝试从上游实时拉取 Gemini/Vertex 任务状态。
@@ -501,6 +550,11 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		"task_id":  task.TaskID,
 		"url":      task.GetResultURL(),
 	}
+	if task.Status == model.TaskStatusSuccess {
+		if signedURL, signedErr := service.BuildSignedVideoContentURL(task.TaskID, task.UserId); signedErr == nil {
+			out["url"] = signedURL
+		}
+	}
 	respBody, _ := common.Marshal(dto.TaskResponse[any]{
 		Code: "success",
 		Data: out,
@@ -548,26 +602,70 @@ func mapTaskStatusToSimple(status model.TaskStatus) string {
 }
 
 func TaskModel2Dto(task *model.Task) *dto.TaskDto {
-	return &dto.TaskDto{
-		ID:         task.ID,
-		CreatedAt:  task.CreatedAt,
-		UpdatedAt:  task.UpdatedAt,
-		TaskID:     task.TaskID,
-		Platform:   string(task.Platform),
-		UserId:     task.UserId,
-		Group:      task.Group,
-		ChannelId:  task.ChannelId,
-		Quota:      task.Quota,
-		Action:     task.Action,
-		Status:     string(task.Status),
-		FailReason: task.FailReason,
-		ResultURL:  task.GetResultURL(),
-		SubmitTime: task.SubmitTime,
-		StartTime:  task.StartTime,
-		FinishTime: task.FinishTime,
-		Progress:   task.Progress,
-		Properties: task.Properties,
-		Username:   task.Username,
-		Data:       task.Data,
+	resultURL := task.GetResultURL()
+	inputTokens, outputTokens, totalTokens := taskTokenUsage(task.Data)
+	// FZYinghe provider links are short-lived. For legacy tasks created before
+	// the server-side proxy was introduced, expose the stable proxy URL too;
+	// the proxy handler still falls back to the stored provider URL while it is
+	// available. New tasks already store this URL in ResultURL.
+	if task.Status == model.TaskStatusSuccess &&
+		task.PrivateData.UpstreamResultURL == "" &&
+		resultURL != "" &&
+		resultURL != taskcommon.BuildProxyURL(task.TaskID) &&
+		!strings.HasPrefix(resultURL, "data:") &&
+		task.Platform == constant.TaskPlatform(strconv.Itoa(constant.ChannelTypeFZYingheVideo)) {
+		resultURL = taskcommon.BuildProxyURL(task.TaskID)
 	}
+
+	return &dto.TaskDto{
+		ID:            task.ID,
+		CreatedAt:     task.CreatedAt,
+		UpdatedAt:     task.UpdatedAt,
+		TaskID:        task.TaskID,
+		Platform:      string(task.Platform),
+		UserId:        task.UserId,
+		Group:         task.Group,
+		ChannelId:     task.ChannelId,
+		Quota:         task.Quota,
+		Action:        task.Action,
+		Status:        string(task.Status),
+		FailReason:    task.FailReason,
+		ResultURL:     resultURL,
+		SubmitTime:    task.SubmitTime,
+		StartTime:     task.StartTime,
+		FinishTime:    task.FinishTime,
+		Progress:      task.Progress,
+		Properties:    task.Properties,
+		Username:      task.Username,
+		Data:          task.Data,
+		InputTokens:   inputTokens,
+		OutputTokens:  outputTokens,
+		TotalTokens:   totalTokens,
+		BillingAmount: float64(task.Quota) / float64(common.QuotaPerUnit),
+	}
+}
+
+func taskTokenUsage(data []byte) (inputTokens, outputTokens, totalTokens int) {
+	if len(data) == 0 {
+		return 0, 0, 0
+	}
+	type usage struct {
+		InputTokens  int `json:"inputTokens"`
+		OutputTokens int `json:"outputTokens"`
+		TotalTokens  int `json:"totalTokens"`
+	}
+	var response struct {
+		Data struct {
+			TokenUsage usage `json:"tokenUsage"`
+		} `json:"data"`
+		TokenUsage usage `json:"tokenUsage"`
+	}
+	if err := common.Unmarshal(data, &response); err != nil {
+		return 0, 0, 0
+	}
+	tokenUsage := response.Data.TokenUsage
+	if tokenUsage.TotalTokens == 0 {
+		tokenUsage = response.TokenUsage
+	}
+	return tokenUsage.InputTokens, tokenUsage.OutputTokens, tokenUsage.TotalTokens
 }

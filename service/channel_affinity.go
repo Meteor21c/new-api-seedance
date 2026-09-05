@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -123,7 +124,7 @@ func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 	mainCap, _ := cache.Capacity()
 	mainAlgo, _ := cache.Algorithm()
 
-	rules := setting.Rules
+	rules := rulesWithSmartAPIFallback(setting.Rules)
 	ruleByName := make(map[string]operation_setting.ChannelAffinityRule, len(rules))
 	for _, r := range rules {
 		name := strings.TrimSpace(r.Name)
@@ -222,8 +223,9 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 	}
 
 	var matchedRule *operation_setting.ChannelAffinityRule
-	for i := range setting.Rules {
-		r := &setting.Rules[i]
+	rules := rulesWithSmartAPIFallback(setting.Rules)
+	for i := range rules {
+		r := &rules[i]
 		if strings.TrimSpace(r.Name) != ruleName {
 			continue
 		}
@@ -243,6 +245,16 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 		return 0, err
 	}
 	return deleted, nil
+}
+
+func rulesWithSmartAPIFallback(rules []operation_setting.ChannelAffinityRule) []operation_setting.ChannelAffinityRule {
+	fallback := operation_setting.SmartAPIChatFallbackRule()
+	for _, rule := range rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Name), fallback.Name) {
+			return rules
+		}
+	}
+	return append(append([]operation_setting.ChannelAffinityRule(nil), rules...), fallback)
 }
 
 func matchAnyRegexCached(patterns []string, s string) bool {
@@ -561,7 +573,12 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		userAgent = c.Request.UserAgent()
 	}
 
-	for _, rule := range setting.Rules {
+	rules := setting.Rules
+	if common.GetContextKeyBool(c, constant.ContextKeyTokenSmartText) {
+		rules = rulesWithSmartAPIFallback(rules)
+	}
+
+	for _, rule := range rules {
 		if !matchAnyRegexCached(rule.ModelRegex, modelName) {
 			continue
 		}
