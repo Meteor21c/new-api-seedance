@@ -321,6 +321,66 @@ func TestListModelsIncludesTieredBillingModel(t *testing.T) {
 	require.Empty(t, missingExprPricing.BillingExpr)
 }
 
+func TestListModelsCodexManifestUsesRequestModelsWithoutCache(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	db := setupModelListControllerTestDB(t)
+	user := &model.User{
+		Id:       1099,
+		Username: "codex-model-list-user",
+		Password: "password",
+		Group:    "default",
+		Status:   common.UserStatusEnabled,
+	}
+	require.NoError(t, db.Create(user).Error)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: "gpt-6-astra", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "gpt-5.6-luna", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "hidden-model", ChannelId: 1, Enabled: false},
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.149.1", nil)
+	ctx.Set("id", user.Id)
+
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
+	var payload struct {
+		Models []codexModelInfo   `json:"models"`
+		Data   []dto.OpenAIModels `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.Len(t, payload.Models, 2)
+	assert.Empty(t, payload.Data)
+	bySlug := make(map[string]codexModelInfo, len(payload.Models))
+	for _, modelInfo := range payload.Models {
+		bySlug[modelInfo.Slug] = modelInfo
+	}
+	astra := bySlug["gpt-6-astra"]
+	assert.Equal(t, "GPT-6-Astra", astra.DisplayName)
+	require.NotNil(t, astra.DefaultReasoningLevel)
+	assert.Equal(t, "low", *astra.DefaultReasoningLevel)
+	assert.NotEmpty(t, astra.SupportedReasoning)
+	assert.Equal(t, "unified_exec", astra.ShellType)
+	assert.Equal(t, "text", astra.InputModalities[0])
+	assert.Equal(t, codexBaseInstructions, astra.BaseInstructions)
+}
+
+func TestBuildCodexModelsDeduplicatesAndProvidesFallbackMetadata(t *testing.T) {
+	models := buildCodexModels([]string{"custom-model", "custom-model", "", "gpt-5.4"})
+	require.Len(t, models, 2)
+	assert.Equal(t, "custom-model", models[0].Slug)
+	require.NotNil(t, models[0].DefaultReasoningLevel)
+	assert.Equal(t, "none", *models[0].DefaultReasoningLevel)
+	assert.False(t, models[0].SupportsReasoning)
+	assert.Equal(t, "gpt-5.4", models[1].Slug)
+	require.NotNil(t, models[1].DefaultReasoningLevel)
+	assert.Equal(t, "medium", *models[1].DefaultReasoningLevel)
+	assert.Equal(t, []string{"text"}, models[1].InputModalities)
+}
+
 func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T) {
 	withSelfUseModeEnabled(t)
 	db := setupModelListControllerTestDB(t)

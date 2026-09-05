@@ -209,6 +209,13 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 }
 
 func ListModels(c *gin.Context, modelType int) {
+	codexManifestRequest := modelType == constant.ChannelTypeOpenAI && strings.TrimSpace(c.Query("client_version")) != ""
+	if codexManifestRequest {
+		// The manifest is built from the current request and must not be
+		// stored by browsers, proxies, or CDNs.
+		c.Header("Cache-Control", "no-store")
+	}
+
 	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
 	if !acceptUnsetRatioModel {
 		userId := c.GetInt("id")
@@ -300,6 +307,15 @@ func ListModels(c *gin.Context, modelType int) {
 			"nextPageToken": nil,
 		})
 	default:
+		if codexManifestRequest {
+			// Codex uses /v1/models?client_version=... and expects a
+			// ModelInfo manifest instead of the regular OpenAI envelope.
+			// Build it from the same request-scoped model list and do not
+			// cache the response so group/channel changes take effect on the
+			// next request.
+			c.JSON(http.StatusOK, codexModelsResponse{Models: buildCodexModels(userModelNames)})
+			return
+		}
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    userOpenAiModels,
