@@ -162,6 +162,15 @@ var BatchUpdateInterval int
 var RelayTimeout int // unit is second
 
 var RelayIdleConnTimeout int // unit is second
+
+// RelayResponseHeaderTimeout limits how long the relay transport waits for the
+// upstream response headers after the request has been fully written.
+// 0 disables it (the historical behaviour: wait indefinitely).
+//
+// This is intentionally separate from RelayTimeout (http.Client.Timeout),
+// which covers the whole response read and would break legitimate long-lived
+// streaming calls. ResponseHeaderTimeout only bounds the pre-header wait.
+var RelayResponseHeaderTimeout int // unit is second
 var RelayMaxIdleConns int
 var RelayMaxIdleConnsPerHost int
 

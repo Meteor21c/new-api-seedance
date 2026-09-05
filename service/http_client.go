@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -71,6 +72,10 @@ func ValidateSSRFProtectedFetchURL(urlStr string) error {
 	return validateURLWithCurrentFetchSetting(urlStr, true)
 }
 
+// maxTimeoutSeconds is the largest number of seconds that can be converted to
+// time.Duration without overflowing (~292 years).
+const maxTimeoutSeconds = int(math.MaxInt64 / int64(time.Second))
+
 func newRelayHTTPTransport() *http.Transport {
 	var transport *http.Transport
 	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok && defaultTransport != nil {
@@ -91,6 +96,16 @@ func newRelayHTTPTransport() *http.Transport {
 	transport.MaxIdleConns = common.RelayMaxIdleConns
 	transport.MaxIdleConnsPerHost = common.RelayMaxIdleConnsPerHost
 	transport.IdleConnTimeout = time.Duration(common.RelayIdleConnTimeout) * time.Second
+	// Bound the wait for upstream response headers. An upstream that accepts a
+	// connection but never responds would otherwise keep the request body and
+	// its goroutine reachable indefinitely. This does not affect streaming after
+	// the headers arrive; set RELAY_RESPONSE_HEADER_TIMEOUT=0 to disable it.
+	if seconds := common.RelayResponseHeaderTimeout; seconds > 0 {
+		if seconds > maxTimeoutSeconds {
+			seconds = maxTimeoutSeconds
+		}
+		transport.ResponseHeaderTimeout = time.Duration(seconds) * time.Second
+	}
 	transport.ForceAttemptHTTP2 = true
 	if common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig
